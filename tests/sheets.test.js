@@ -14,8 +14,9 @@ function fixture({ rows = [], op = 'append', effect, failure, mutate, governor }
   const google = { async getValues({ range }) {
     events.push(['read', range]); reads++;
     mutate?.(rows, reads);
-    if (range.endsWith('!A:A')) return rows.map(r => [r[0]]);
-    const index = Number(range.match(/!(?:A)?(\d+)/)[1]) - 1;
+    // Production sheets reserve row 1 for headers; fixture rows are business rows.
+    if (range.endsWith('!A:A')) return [['ID'], ...rows.map(r => [r[0]])];
+    const index = Number(range.match(/!(?:A)?(\d+)/)[1]) - 2;
     return [range.includes('!A') ? [rows[index]?.[0]] : [...(rows[index] || [])]];
   } };
   for (const method of ['append', 'update', 'clear']) google[method] = async args => {
@@ -50,17 +51,36 @@ test('existing exact append is confirmed without writing; conflicts and duplicat
     assert.equal(writes(f.events).length, 0);
   }
 });
-test('update resolves fresh row and never inserts missing IDs; delete clears entire matching row', async () => {
+test('update resolves fresh row and inserts missing IDs; delete clears entire matching row', async () => {
   for (const [op, method] of [['update', 'update'], ['delete', 'clear']]) {
     const f = fixture({ rows: [['other'], ['id', 'old']], op });
     f.job.data.payload.sheetRow = 99;
     await f.process(f.job);
     assert.equal(writes(f.events)[0][0], method);
-    assert.equal(writes(f.events)[0][1].range, op === 'delete' ? "'O''Brien'!2:2" : "'O''Brien'!A2:B2");
+    assert.equal(writes(f.events)[0][1].range, op === 'delete' ? "'O''Brien'!3:3" : "'O''Brien'!A3:B3");
   }
   const f = fixture({ op: 'update' });
-  await assert.rejects(f.process(f.job), { code: 'SHEET_ID_NOT_FOUND' });
-  assert.equal(writes(f.events).length, 0);
+  await f.process(f.job);
+  assert.equal(writes(f.events)[0][0], 'append');
+  assert.equal(writes(f.events)[0][1].spreadsheetId, 'book');
+  assert.equal(writes(f.events)[0][1].range, "'O''Brien'!A:A");
+});
+
+test('missing update append retains restart safety after ambiguous delivery', async () => {
+  const f = fixture({op: 'update', failure: new Error('lost response')});
+  await assert.rejects(f.process(f.job), e => e.unknown);
+  assert.equal(f.job.data.effect.status, 'started');
+  assert.equal(writes(f.events).length, 1);
+  await assert.rejects(f.process(f.job), e => e.unknown);
+  assert.equal(writes(f.events).length, 1);
+  for (const effect of ['started', 'confirmed']) {
+    const missing = fixture({op: 'update', effect});
+    await assert.rejects(missing.process(missing.job), e => e.unknown);
+    assert.equal(writes(missing.events).length, 0);
+    const landed = fixture({op: 'update', effect, rows: [['id', 'value']]});
+    assert.deepEqual(await landed.process(landed.job), {status: 'confirmed'});
+    assert.equal(writes(landed.events).length, 0);
+  }
 });
 test('external movement or ID change prevents mutation', async () => {
   for (const changeAt of [3, 4]) {
@@ -90,6 +110,10 @@ test('absent deletes reconcile both started and confirmed without another write'
     assert.equal(f.job.data.effect.status, 'confirmed');
     assert.equal(writes(f.events).length, 0);
   }
+});
+test('the header row is never treated as a deletable business record',async()=>{
+  const f=fixture({op:'delete'});f.job.data.payload.recordId='ID';f.job.data.payload.rowValues=['ID','value'];
+  await f.process(f.job);assert.equal(writes(f.events).length,0);
 });
 test('quota rejection leaves no started marker and a retry can append', async () => {
   let reject = true;
@@ -168,5 +192,7 @@ test('adapter passes credentials, RAW writes, 20s timeout and disables retries w
     for (const call of calls) assert.deepEqual(call[2], { timeout: 20000, retry: false, retryConfig: { retry: 0 } });
     assert.equal(calls[1][1].valueInputOption, 'RAW');
     assert.ok(authOptions.credentials || authOptions.keyFile);
+    // Full spreadsheet scope also covers metadata and spreadsheets.batchUpdate.
+    assert.deepEqual(authOptions.scopes, ['https://www.googleapis.com/auth/spreadsheets']);
   }
 });

@@ -20,7 +20,7 @@ function classify(error, write) {
     const retryAfterMs = retryAfter == null ? undefined : Number.isFinite(seconds)
       ? Math.max(0, seconds * 1000) : Math.max(0, Date.parse(retryAfter) - Date.now());
     return fault('SHEET_RATE_OR_SERVICE_LIMIT', 'Google request explicitly rejected', {
-      retryable: true, status, retryAfterMs: Number.isFinite(retryAfterMs) ? retryAfterMs : undefined, cause: error,
+      retryable: true, status, write, retryAfterMs: Number.isFinite(retryAfterMs) ? retryAfterMs : status === 429 ? 60000 : undefined, cause: error,
     });
   }
   if (write && (!status || status >= 500 || status === 408)) return unknown(error);
@@ -59,7 +59,7 @@ function createSheetsProcessor({ google, governor = async () => {} }) {
     };
     const resolve = async () => {
       const rows = await request('read', 'getValues', { range: `${sheet}!A:A` });
-      const matches = rows.flatMap((row, i) => String(row[0] ?? '') === String(p.recordId) ? [i + 1] : []);
+      const matches = rows.flatMap((row, i) => i > 0 && String(row[0] ?? '') === String(p.recordId) ? [i + 1] : []);
       if (matches.length > 1) throw fault('SHEET_DUPLICATE_ID', 'Multiple rows have this record ID');
       return matches[0];
     };
@@ -78,7 +78,6 @@ function createSheetsProcessor({ google, governor = async () => {} }) {
     if (!row) {
       if (p.op === 'delete') return confirm();
       if (resumed) throw unknown();
-      if (p.op === 'update') throw fault('SHEET_ID_NOT_FOUND', 'Update target does not exist');
     } else if (p.op !== 'delete') {
       // Read the whole row so extra nonempty cells cannot count as an exact match.
       const values = await request('read', 'getValues', { range: `${sheet}!${row}:${row}` });
@@ -107,7 +106,7 @@ function createSheetsProcessor({ google, governor = async () => {} }) {
     }
     await mark('started'); // Persist only once quota and final reads succeeded.
     try {
-      if (p.op === 'append') await google.append({ spreadsheetId: p.spreadsheetId,
+      if (p.op === 'append' || (p.op === 'update' && !row)) await google.append({ spreadsheetId: p.spreadsheetId,
         range: `${sheet}!A:A`, values: [p.rowValues] });
       else if (p.op === 'update') await google.update({ spreadsheetId: p.spreadsheetId,
         range: `${sheet}!A${row}:${column(p.rowValues.length)}${row}`, values: [p.rowValues] });

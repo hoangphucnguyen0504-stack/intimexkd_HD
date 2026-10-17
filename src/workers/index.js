@@ -9,30 +9,36 @@ const {createBackendProcessor} = require('../processors/backend');
 const {createGoogleAdapter, createSheetsProcessor} = require('../processors/sheets');
 function processor({store, execute, queue}) {
   return async (job, token) => {
+    const status = (state,error='')=>store.status(job.data,state,error,{token,queueName:job.queueName});
     if (!await store.ready(job.data)) {
-      await store.status(job.data, 'delayed', 'WAITING_FOR_PREDECESSOR');
+      await status('delayed', 'WAITING_FOR_PREDECESSOR');
       await job.moveToDelayed(Date.now() + 5000, token);
       throw new DelayedError();
     }
-    await store.status(job.data, 'active');
+    await status('active');
     try {
       const result = await execute(job);
-      await store.status(job.data, 'completed');
+      await status('completed');
       return result;
     } catch (error) {
       const code = String(error.code || 'PROCESSOR_FAILED').slice(0, 100);
+      if (['SHEETS_LOCAL_RATE_LIMIT','SHEET_CACHE_BUSY'].includes(code)) {
+        await status('delayed',code);
+        await job.moveToDelayed(Date.now()+Math.max(1000,error.retryAfterMs||5000),token);
+        throw new DelayedError();
+      }
       if (error.unknown || error.retryable !== true) {
-        await store.status(job.data, error.unknown ? 'unknown' : 'failed', code);
+        await status(error.unknown ? 'unknown' : 'failed', code);
         throw new UnrecoverableError(code);
       }
       if (job.attemptsMade + 1 >= job.opts.attempts) {
-        await store.status(job.data, 'failed', code);
+        await status('failed', code);
         throw new UnrecoverableError(code);
       }
       // Store Retry-After in durable job data for BullMQ's custom backoff.
       const next = {...job.data, retryAfterMs: error.retryAfterMs || 0};
       await job.updateData(next); job.data = next;
-      await store.status(job.data, 'delayed', code);
+      await status('delayed', code);
       throw Object.assign(Error(code), {retryAfterMs: error.retryAfterMs});
     }
   };
@@ -46,8 +52,29 @@ async function main() {
   await queues.background.setGlobalConcurrency(config.concurrency);
   const google = await createGoogleAdapter();
   const sheets = createSheetsProcessor({google, governor: createGovernor(redis, config)});
+  const coordination = require('../services/coordination').createCoordination(redis, config);
+  const guardedSheets = async job => {
+    const {hash} = require('../utils/protocol');
+    const payload = job.data.payload, owner = require('node:crypto').randomUUID();
+    const name = 'sheet-batch/' + hash(payload.spreadsheetId);
+    if (!await coordination.execute({op:'lockAcquire',name,owner,ttlMs:180000})) throw Object.assign(Error('SHEET_CACHE_BUSY'),{code:'SHEET_CACHE_BUSY',retryable:true,retryAfterMs:3000});
+    let lost = false;
+    const renew = setInterval(() => coordination.execute({op:'lockRenew',name,owner,ttlMs:180000}).then(owned => {if(!owned)lost=true;}).catch(()=>{lost=true;}),30000);
+    try {
+      let result;
+      try {result = await sheets(job);}
+      catch(error) {
+        if(error.status===429){const seconds=Math.max(1,Math.ceil((error.retryAfterMs||60000)/1000));await coordination.execute({op:'set',key:'sheets-cooldown/'+(error.write?'write':'read'),value:{until:Date.now()+seconds*1000},ttl:seconds}).catch(()=>{});}
+        throw error;
+      }
+      if (lost) throw Object.assign(Error('SHEET_LEASE_LOST'),{code:'SHEET_LEASE_LOST',unknown:true});
+      const cacheName = 'sheet-cache/' + hash(JSON.stringify([payload.spreadsheetId,payload.sheet]));
+      await coordination.execute({op:'remove',key:cacheName});
+      return result;
+    } finally {clearInterval(renew); await coordination.execute({op:'lockRelease',name,owner}).catch(()=>{});}
+  };
   const background = createBackendProcessor(config);
-  const workers = Object.entries({sheets, background}).map(([kind, execute]) => {
+  const workers = Object.entries({sheets:guardedSheets, background}).map(([kind, execute]) => {
     const worker = new Worker(kind, processor({store, execute, queue: queues[kind]}), {
       connection: redis, prefix: config.prefix, concurrency: kind === 'sheets' ? 1 : config.concurrency,
       lockDuration: 180000, stalledInterval: 30000, maxStalledCount: 1,

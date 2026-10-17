@@ -1,3 +1,9 @@
+# Cập nhật runtime HDoi
+
+**Bản bên dưới là báo cáo giai đoạn trước. Trạng thái hiện tại xem [HDOI_RUNTIME_CUTOVER.md](../docs/HDOI_RUNTIME_CUTOVER.md).** Mã runtime đã chuyển sang HDoi; chưa deploy hoặc nghiệm thu Redis/Docker thực tế.
+
+---
+
 # HDoi — trạng thái triển khai ngày 17/10/2026
 
 ## Kết luận hiện tại

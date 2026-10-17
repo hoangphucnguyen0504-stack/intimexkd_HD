@@ -9,9 +9,9 @@ end
 redis.call('ZADD',KEYS[1],now,ARGV[2]); redis.call('PEXPIRE',KEYS[1],61000); return 0`;
 function createGovernor(redis, config) {
   return async kind => {
-    const delay = await redis.eval(RESERVE, 1, config.prefix + ':quota:' + kind,
-      kind === 'read' ? config.reads : config.writes, require('node:crypto').randomUUID());
-    if (delay > 0) throw Object.assign(Error('SHEETS_LOCAL_RATE_LIMIT'), {code: 'SHEETS_LOCAL_RATE_LIMIT', retryable: true, retryAfterMs: delay});
+    const reserved = await require('./coordination').createCoordination(redis,config).execute({op:'quotaReserve',kind,limit:kind==='read'?config.reads:config.writes});
+    if(!reserved.accepted)throw Object.assign(Error('SHEETS_LOCAL_RATE_LIMIT'),{code:'SHEETS_LOCAL_RATE_LIMIT',retryable:true,retryAfterMs:reserved.retryAfterSeconds*1000});
+    return;
   };
 }
 module.exports = {createGovernor};

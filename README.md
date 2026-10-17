@@ -1,17 +1,13 @@
 # HDoi — Queue Service và hướng dẫn triển khai
 
 **Đọc [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) trước khi triển khai.**
-File đó ghi rõ phần đã kiểm thử, phần còn phụ thuộc Neon và điều kiện cutover.
-Chưa bật `QUEUE_PROVIDER=hdoi` trên production.
+Xem [báo cáo runtime hiện tại](../docs/HDOI_RUNTIME_CUTOVER.md): mã backend đã chuyển sang HDoi, chưa deploy/cutover production.
 
 This directory packages an Express API on port 3100, a separate BullMQ/ioredis
 worker, and Redis. The application entry points are `src/app.js` and
 `src/workers/index.js`; image installation uses `package.json` and
 `package-lock.json`. The API and worker are implemented. Backend integration is
-**experimental and limited to regular queues**; do not enable other queue flows
-based on this packaging. Backend callbacks still depend on Neon: this is not a
-full Neon replacement. No Docker build, container runtime, or recovery test was
-run for this packaging work, and no application test result is claimed here.
+Backend runtime now uses HDoi for queue/state/locks without Neon fallback. Existing source rows and jobs are retained for offline migration. Docker startup, restart and recovery still require staging verification; do not deploy before completing the cutover checklist.
 
 ## Windows VPS prerequisites
 
@@ -31,9 +27,7 @@ the allowlist in `.dockerignore` also limits the context to manifests and source
 No backend sources or `.env` files are copied. Review source for embedded secrets
 before release; do not put credentials under `src/`. The worker calls the backend
 over HTTP using `BACKEND_URL` and `BACKEND_WORKER_TOKEN`, with no direct backend
-imports. Backend callbacks still require the existing backend and its Neon
-database/configuration. This queue deployment does not remove Neon or provision
-a replacement backend/database.
+imports. Backend callbacks require the existing backend with HDoi configuration and Google/SMTP credentials. Redis is technical state only; Google Sheets remains the business source.
 
 Use a clean staging checkout of reviewed, committed files. Example:
 
@@ -112,7 +106,7 @@ allows the periodic writer to run. Verify that startup fix before release.
 Heartbeat freshness alone does not prove successful job processing.
 Both checks run every 10 seconds with a 30-second startup grace and three
 failure retries. Redis health verifies only PING. Liveness does not prove backend
-or Neon readiness, and Compose does not restart a container merely because it
+or backend readiness, and Compose does not restart a container merely because it
 becomes unhealthy; monitor health and investigate failures.
 
 After completing those checks in an isolated environment, an operator can run:

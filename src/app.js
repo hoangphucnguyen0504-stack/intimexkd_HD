@@ -10,8 +10,35 @@ function createApp({redis, queues, store, config}) {
   app.disable('x-powered-by'); app.use(helmet());
   app.get('/health/live', (_req, res) => res.json({ok: true}));
   app.use(require('./middleware/auth')(config.token));
-  app.use(express.json({limit: '300kb', strict: true}));
+  app.use(express.json({limit: '2mb', strict: true}));
   const route = handler => (req, res, next) => Promise.resolve(handler(req, res)).catch(next);
+  const coordination = require('./services/coordination').createCoordination(redis, config);
+  const outbox = require('./services/sheetOutbox').createSheetOutbox({redis, store, queues});
+  app.post('/v1/coordination', route(async (req, res) => {
+    const body = req.body;
+    if (body.namespace !== config.namespace) return res.status(403).json({ok:false,code:'NAMESPACE_MISMATCH'});
+    let value;
+    if (body.op === 'commit') value = await store.commit(body);
+    else if (typeof body.op === 'string' && body.op.startsWith('sheet')) value = await outbox.execute(body.op, body);
+    else if (body.op === 'queueDiagnostics') {
+      const groups=[];
+      for(const kind of ['sheets','background'])for(const state of ['waiting','delayed','active','completed','failed','unknown']){
+        const key=store.base+'queue-status:'+kind+':'+state,count=await redis.zcard(key);
+        if(!count)continue;
+        const [id]=await redis.zrange(key,0,0),first=id&&await store.get(id);
+        groups.push({queue:kind==='background'?'jobs':'sheets',status:require('./services/sheetOutbox').mapStatus(state),count,
+          attemptsBeyondFirst:null,oldestOutstandingAgeMs:['waiting','delayed','active','unknown'].includes(state)&&first?Math.max(0,Date.now()-Number(first.createdAt)):null,
+          averageStartDelayMs:null,manualReconciliation:state==='unknown'?count:0,expiredLeases:null});
+      }
+      value={available:true,provider:'hdoi',observedAt:new Date().toISOString(),scope:'current namespace; Redis status indexes; null means not measured',groups,
+        dispatchPending:await redis.zcard(store.base+'dispatch')};
+    }
+    else if (body.op === 'writeFailure') {
+      const code = String(body.entry?.code || 'SHEETS_WRITE_FAILED').slice(0,100);
+      await redis.xadd(config.prefix+':write-failures','MAXLEN','~',1000,'*','code',code,'at',String(Date.now())); value = true;
+    } else value = await coordination.execute(body);
+    res.json({ok:true,value});
+  }));
   app.get('/health/ready', route(async (_req, res) => {await redis.ping(); res.json({ok: true});}));
   app.post('/v1/jobs', route(async (req, res) => {
     const key = config.prefix + ':api-window';
@@ -29,9 +56,9 @@ function createApp({redis, queues, store, config}) {
     if (typeof req.body.key !== 'string') throw Object.assign(Error('INVALID_KEY'), {status: 400});
     res.json({ok: true, ...await store.retry(hash(req.body.key))});
   }));
-  app.post('/v1/jobs/by-key/resume', route(async (_req, res) => {
-    // A completed SMTP side effect cannot be replayed merely because settings changed.
-    res.status(409).json({ok: false, code: 'EXPLICIT_NEW_EVENT_REQUIRED'});
+  app.post('/v1/jobs/by-key/resume', route(async (req, res) => {
+    const result = await store.commit({idempotencyKey:require('node:crypto').randomUUID(),operations:[{kind:'control',action:'resume',key:req.body.key}]});
+    res.status(202).json({ok:true,status:'pending',accepted:result.accepted});
   }));
   app.get('/v1/jobs/:id', route(async (req, res) => {
     const row = await store.get(req.params.id);

@@ -35,4 +35,26 @@ test('real Redis: parallel dedup, intent restart recovery, entity ordering and s
   const limit = createGovernor(redis, config);
   await limit('read'); await limit('read');
   await assert.rejects(limit('read'), error => error.retryable && error.retryAfterMs > 0);
+  // Real Lua group commit must reject lost owners before writing TTL or jobs.
+  const coordinated=require('../../src/services/coordination').createCoordination(redis,{...config,reads:2,writes:2});
+  await coordinated.execute({op:'lockAcquire',name:'record/one',owner:'owner-one',ttlMs:180000});
+  const group={idempotencyKey:'atomic-group',locks:[{name:'record/one',owner:'owner-one'}],operations:[
+    {kind:'technical',op:'set',key:'test/accepted',value:true,ttl:60},
+    {kind:'sheet',logicalSheet:'VehicleTrips',data:{type:'sheet-write',key:'atomic-write',payload:{spreadsheetId:'1234567890',sheet:'Vehicles',recordId:'V1',op:'append',rowValues:['V1',4000]}}},
+    {kind:'job',data:{type:'email',key:'atomic-email',payload:{key:'atomic-email'},dependsOn:require('../../src/utils/protocol').hash('atomic-write')}}
+  ]};
+  await assert.rejects(store.commit({...group,idempotencyKey:'lost-group',locks:[{name:'record/one',owner:'wrong'}]}),/HDOI_LEASE_LOST/);
+  assert.equal(await coordinated.execute({op:'get',key:'test/accepted'}),null);
+  const accepted=await store.commit(group);
+  assert.deepEqual(await store.commit(group),accepted);
+  assert.equal(await coordinated.execute({op:'get',key:'test/accepted'}),true);
+  const dependent=await store.get(accepted.jobs[1].id);
+  assert.equal(await store.ready(dependent.data),false);
+  // A stale BullMQ owner cannot publish completion or release the next entity.
+  const source=await store.get(accepted.jobs[0].id);
+  const lock=config.prefix+':sheets:'+source.id+':lock';await redis.set(lock,'current-token','PX',10000);
+  await assert.rejects(store.status(source.data,'completed','',{queueName:'sheets',token:'stale-token'}),/WORKER_LEASE_LOST/);
+  assert.equal((await store.get(source.id)).status,'waiting');
+  await store.status(source.data,'completed','',{queueName:'sheets',token:'current-token'});
+  assert.equal(await store.ready(dependent.data),true);
 });

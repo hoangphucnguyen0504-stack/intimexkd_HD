@@ -35,7 +35,11 @@ function createBackendProcessor(config, fetchImpl = fetch) {
         unknown: result?.unknown === true || (delivery && !knownRejected),
         retryAfterMs: Math.max(0, Number(response.headers.get('retry-after')) || 0) * 1000});
     }
-    return {confirmed: true};
+    if (delivery && ['NO_RECIPIENT','DISABLED'].includes(result.deliveryStatus)) {
+      const next = {...job.data,effect:{status:'rejected',at:Date.now()}};
+      await job.updateData(next); job.data = next;
+    }
+    return {confirmed: true, ...(result.deliveryStatus ? {deliveryStatus:result.deliveryStatus} : {})};
   };
 }
 module.exports = {createBackendProcessor};
