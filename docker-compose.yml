@@ -1,0 +1,94 @@
+name: hdoi
+
+x-app: &app
+  image: hdoi-app:local
+  build:
+    context: .
+    dockerfile: Dockerfile
+  init: true
+  restart: unless-stopped
+  environment: &environment
+    NODE_ENV: production
+    PORT: "3100"
+    REDIS_URL: redis://redis:6379
+    QUEUE_API_TOKEN: ${QUEUE_API_TOKEN:?Set QUEUE_API_TOKEN in HDoi/.env}
+    APP_NAMESPACE: ${APP_NAMESPACE:?Set APP_NAMESPACE in HDoi/.env}
+    BACKEND_URL: ${BACKEND_URL:?Set BACKEND_URL in HDoi/.env}
+    BACKEND_WORKER_TOKEN: ${BACKEND_WORKER_TOKEN:?Set BACKEND_WORKER_TOKEN in HDoi/.env}
+    WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+    SHEETS_READS_PER_MINUTE: ${SHEETS_READS_PER_MINUTE:-40}
+    SHEETS_WRITES_PER_MINUTE: ${SHEETS_WRITES_PER_MINUTE:-40}
+    GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON:-}
+  mem_limit: 512m
+  cpus: "1.0"
+  depends_on:
+    redis:
+      condition: service_healthy
+  stop_grace_period: 60s
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  queue-api:
+    <<: *app
+    command: ["node", "src/app.js"]
+    ports:
+      - "127.0.0.1:3100:3100"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/health/live', {signal: AbortSignal.timeout(3000)}).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  queue-worker:
+    <<: *app
+    command: ["node", "src/workers/index.js"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "try { const t = Number(require('node:fs').readFileSync('/tmp/hdoi-worker-heartbeat', 'utf8').trim()); const age = Date.now() - t; process.exit(Number.isFinite(t) && t > 0 && age >= 0 && age < 45000 ? 0 : 1); } catch { process.exit(1); }"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  redis:
+    image: redis:7.4-bookworm
+    mem_limit: 1g
+    cpus: "1.0"
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - always
+      - --maxmemory-policy
+      - noeviction
+      - --maxmemory
+      - 512mb
+      - --save
+      - ""
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    stop_grace_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  redis-data:
+    name: ${REDIS_VOLUME_NAME:-hdoi-redis-data}

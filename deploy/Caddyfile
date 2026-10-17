@@ -1,0 +1,10 @@
+# Caddy obtains and renews HTTPS certificates for the configured DNS hostname.
+{$HDOI_DOMAIN} {
+    @queue path /v1/* /health/live /health/ready
+    handle @queue {
+        reverse_proxy queue-api:3100
+    }
+    handle {
+        respond "Not found" 404
+    }
+}

@@ -1,0 +1,13 @@
+# Allow only dependency manifests and application source into the build context.
+**
+!package.json
+!package-lock.json
+!src/
+!src/**
+**/.env
+**/.env.*
+**/*service-account*.json
+**/credentials*.json
+**/*.pem
+**/*.key
+**/*.log

@@ -1,0 +1,68 @@
+'use strict';
+const express = require('express');
+const helmet = require('helmet');
+const {config: loadConfig} = require('./config');
+const {connect, queues: createQueues} = require('./queues');
+const {createStore, publicStatus} = require('./services/store');
+const {hash} = require('./utils/protocol');
+function createApp({redis, queues, store, config}) {
+  const app = express();
+  app.disable('x-powered-by'); app.use(helmet());
+  app.get('/health/live', (_req, res) => res.json({ok: true}));
+  app.use(require('./middleware/auth')(config.token));
+  app.use(express.json({limit: '300kb', strict: true}));
+  const route = handler => (req, res, next) => Promise.resolve(handler(req, res)).catch(next);
+  app.get('/health/ready', route(async (_req, res) => {await redis.ping(); res.json({ok: true});}));
+  app.post('/v1/jobs', route(async (req, res) => {
+    const key = config.prefix + ':api-window';
+    const hits = await redis.eval("local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('PEXPIRE',KEYS[1],1000) end; return n", 1, key);
+    if (hits > 100) return res.status(429).set('Retry-After', '1').json({ok: false, code: 'QUEUE_RATE_LIMITED'});
+    res.status(202).json({ok: true, ...await store.submit(req.body)});
+  }));
+  app.get('/v1/jobs', route(async (req, res) => {
+    const offset = Math.max(0, Math.min(100000, Number(req.query.offset) || 0));
+    const limit = Math.max(1, Math.min(50, Number(req.query.limit) || 20));
+    if (!Number.isInteger(offset) || !Number.isInteger(limit)) throw Object.assign(Error('INVALID_PAGE'), {status: 400});
+    res.json({ok: true, items: await store.history(offset, limit)});
+  }));
+  app.post('/v1/jobs/by-key/retry', route(async (req, res) => {
+    if (typeof req.body.key !== 'string') throw Object.assign(Error('INVALID_KEY'), {status: 400});
+    res.json({ok: true, ...await store.retry(hash(req.body.key))});
+  }));
+  app.post('/v1/jobs/by-key/resume', route(async (_req, res) => {
+    // A completed SMTP side effect cannot be replayed merely because settings changed.
+    res.status(409).json({ok: false, code: 'EXPLICIT_NEW_EVENT_REQUIRED'});
+  }));
+  app.get('/v1/jobs/:id', route(async (req, res) => {
+    const row = await store.get(req.params.id);
+    if (!row) return res.status(404).json({ok: false, code: 'JOB_NOT_FOUND'});
+    const job = await queues[row.queue].getJob(row.id);
+    res.json({ok: true, ...publicStatus(row), bullState: job ? await job.getState() : 'dispatch-pending', attempts: job?.attemptsMade || 0,
+      events: await store.events(row.id)});
+  }));
+  app.post('/v1/jobs/:id/reconcile', route(async (req, res) => {
+    if (typeof req.body.reason !== 'string' || req.body.reason.trim().length < 8) throw Object.assign(Error('REASON_REQUIRED'), {status: 400});
+    const row = await store.get(req.params.id);
+    if (row?.data.type !== 'sheet-write') throw Object.assign(Error('MANUAL_DELIVERY_CHECK_REQUIRED'), {status: 409});
+    res.json({ok: true, ...await store.retry(req.params.id, true)});
+  }));
+  app.get('/v1/metrics', route(async (_req, res) => {
+    res.json({ok: true, dispatchPending: await redis.zcard(store.base + 'dispatch'),
+      sheets: await queues.sheets.getJobCounts(), background: await queues.background.getJobCounts()});
+  }));
+  app.use((err, _req, res, _next) => {
+    const status = err.status || (err.type === 'entity.parse.failed' ? 400 : 503);
+    res.status(status).json({ok: false, code: status < 500 ? err.message : 'QUEUE_UNAVAILABLE'});
+  });
+  return app;
+}
+async function main() {
+  const config = loadConfig(), redis = connect(config), queues = createQueues(config, redis);
+  const store = createStore(redis, queues, config);
+  await redis.ping();
+  const server = createApp({config, redis, queues, store}).listen(config.port, '0.0.0.0');
+  const stop = () => server.close(async () => {await Promise.all(Object.values(queues).map(q => q.close())); await redis.quit();});
+  process.once('SIGTERM', stop); process.once('SIGINT', stop);
+}
+if (require.main === module) main().catch(() => {console.error('queue-api-start-failed'); process.exitCode = 1;});
+module.exports = {createApp};
