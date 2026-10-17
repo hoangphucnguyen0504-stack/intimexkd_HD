@@ -79,6 +79,7 @@ function createApp({redis, queues, store, config}) {
   }));
   app.use((err, _req, res, _next) => {
     const status = err.status || (err.type === 'entity.parse.failed' ? 400 : 503);
+    if (status >= 500) console.error(JSON.stringify({event: 'queue-api-error', code: String(err.message || 'QUEUE_UNAVAILABLE').slice(0, 300)}));
     res.status(status).json({ok: false, code: status < 500 ? err.message : 'QUEUE_UNAVAILABLE'});
   });
   return app;

@@ -66,7 +66,9 @@ test('quota shares worker buckets, clamps limit and atomically checks cooldown',
   const [script, count, bucket, cooldown, limit] = calls[0];
   assert.equal(count, 2); assert.equal(bucket, 'isolated:quota:write'); assert.equal(limit, 35);
   assert.equal(cooldown, 'isolated:technical:' + digest('sheets-cooldown/write'));
-  assert.match(script, /redis.call\('TIME'\)/); assert.match(script, /ZREMRANGEBYSCORE/);
+  assert.match(script, /tonumber\(ARGV\[3\]\)/); assert.doesNotMatch(script, /redis\.call\('TIME'\)/);
+  assert.match(script, /ZREMRANGEBYSCORE/);
+  assert.equal(Number.isSafeInteger(calls[0][6]), true);
   assert.match(script, /cjson.decode/);
   delay = 12;
   assert.deepEqual(await execute({op: 'quotaReserve', kind: 'read', limit: 20}), {accepted: false, retryAfterSeconds: 12});

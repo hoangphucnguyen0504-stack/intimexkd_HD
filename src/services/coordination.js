@@ -27,7 +27,13 @@ const ACQUIRE = `if redis.call('SET',KEYS[1],ARGV[1],'NX','PX',ARGV[2]) then ret
 const RENEW = `if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('PEXPIRE',KEYS[1],ARGV[2]) end; return 0`;
 const RELEASE = `if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DEL',KEYS[1]) end; return 0`;
 const SET_MANY = `for i,key in ipairs(KEYS) do redis.call('SET',key,ARGV[i*2-1],'EX',ARGV[i*2]) end; return 1`;
-const QUOTA = `local t=redis.call('TIME'); local now=t[1]*1000+math.floor(t[2]/1000)
+// Clock is an argument. Redis rejects a script that calls TIME and then writes,
+// which turned every quotaReserve into QUEUE_UNAVAILABLE.
+const QUOTA = `local now=tonumber(ARGV[3])
+if not now or now~=math.floor(now) or now<1 then return redis.error_reply('INVALID_TIME') end
+local kind=redis.call('TYPE',KEYS[1])
+local typ=type(kind)=='table' and (kind['ok'] or kind['err']) or kind
+if typ~='none' and typ~='zset' then redis.call('DEL',KEYS[1]) end
 local cooldown=redis.call('GET',KEYS[2])
 if cooldown then
  local value=cjson.decode(cooldown)
@@ -94,7 +100,7 @@ function createCoordination(redis, config) {
         const limit = integer(input.limit, 50);
         const configured = integer(input.kind === 'read' ? config.reads : config.writes, 50);
         const delay = Number(await redis.eval(QUOTA, 2, config.prefix + ':quota:' + input.kind,
-          stateKey('sheets-cooldown/' + input.kind), Math.min(limit, configured), randomUUID()));
+          stateKey('sheets-cooldown/' + input.kind), Math.min(limit, configured), randomUUID(), Date.now()));
         return {accepted: delay === 0, retryAfterSeconds: delay};
       }
       default: invalid();
