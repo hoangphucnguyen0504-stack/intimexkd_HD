@@ -37,7 +37,7 @@ if typ~='none' and typ~='zset' then redis.call('DEL',KEYS[1]) end
 local cooldown=redis.call('GET',KEYS[2])
 if cooldown then
  local value=cjson.decode(cooldown)
- if type(value)=='table' and tonumber(value.until) and tonumber(value.until)>now then return math.ceil((tonumber(value.until)-now)/1000) end
+ if type(value)=='table' and tonumber(value['until']) and tonumber(value['until'])>now then return math.ceil((tonumber(value['until'])-now)/1000) end
 end
 redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',now-60000)
 if redis.call('ZCARD',KEYS[1])>=tonumber(ARGV[1]) then
