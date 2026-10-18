@@ -57,8 +57,8 @@ function createSheetsProcessor({ google, governor = async () => {} }) {
       try { return await google[method]({ spreadsheetId: p.spreadsheetId, ...args }); }
       catch (error) { throw classify(error, kind === 'write'); }
     };
-    const resolve = async () => {
-      const rows = await request('read', 'getValues', { range: `${sheet}!A:A` });
+    const resolve = async (rows) => {
+      rows ??= await request('read', 'getValues', { range: `${sheet}!A:A` });
       const matches = rows.flatMap((row, i) => i > 0 && String(row[0] ?? '') === String(p.recordId) ? [i + 1] : []);
       if (matches.length > 1) throw fault('SHEET_DUPLICATE_ID', 'Multiple rows have this record ID');
       return matches[0];
@@ -96,10 +96,16 @@ function createSheetsProcessor({ google, governor = async () => {} }) {
     // Acquire write quota BEFORE the final verification, avoiding a governor
     // wait between verification and the actual write.
     await governor('write');
-    const current = await resolve();
+    // One request supplies both final checks; legacy injected facades retain
+    // the sequential path. No verification is reused across quota waits/jobs.
+    const finalValues = row && typeof google.batchGetValues === 'function'
+      ? await request('read', 'batchGetValues', { ranges: [`${sheet}!A:A`, `${sheet}!A${row}`] })
+      : null;
+    const current = await resolve(finalValues ? finalValues[0] || [] : undefined);
     if (current !== row) throw fault('SHEET_ROW_CHANGED', 'Target moved before write');
     if (row) {
-      const id = await request('read', 'getValues', { range: `${sheet}!A${row}` });
+      const id = finalValues ? finalValues[1] || []
+        : await request('read', 'getValues', { range: `${sheet}!A${row}` });
       if (String(id[0]?.[0] ?? '') !== String(p.recordId)) {
         throw fault('SHEET_ROW_CHANGED', 'Target ID changed before write');
       }
@@ -137,6 +143,10 @@ async function createGoogleAdapter({ env = process.env, googleapis } = {}) {
     async getValues(args) {
       const result = await values.get({ ...args, valueRenderOption: 'UNFORMATTED_VALUE' }, options());
       return result.data.values || [];
+    },
+    async batchGetValues(args) {
+      const result = await values.batchGet({ ...args, valueRenderOption: 'UNFORMATTED_VALUE' }, options());
+      return (result.data.valueRanges || []).map(item => item.values || []);
     },
     append: ({ values: rows, ...args }) => values.append({ ...args,
       valueInputOption: 'RAW', insertDataOption: 'INSERT_ROWS', requestBody: { values: rows } }, options()),

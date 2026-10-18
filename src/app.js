@@ -84,13 +84,46 @@ function createApp({redis, queues, store, config}) {
   });
   return app;
 }
+function waitForRedisReady(redis, timeoutMs = 15000) {
+  if (redis.status === 'ready') return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const finish = error => {
+      clearTimeout(timer);
+      redis.off('ready', onReady);
+      redis.off('end', onEnd);
+      redis.off('error', onError);
+      if (error) reject(error); else resolve();
+    };
+    const onReady = () => finish();
+    const onEnd = () => finish(Object.assign(new Error('Redis connection closed'), {code: 'REDIS_CONNECTION_CLOSED'}));
+    // connect() logs sanitized errors; ioredis can reconnect until end/timeout.
+    const onError = () => {};
+    const timer = setTimeout(() => finish(Object.assign(new Error('Redis readiness timed out'), {code: 'REDIS_READY_TIMEOUT'})), timeoutMs);
+    redis.on('ready', onReady);
+    redis.on('end', onEnd);
+    redis.on('error', onError);
+    if (redis.status === 'ready') onReady();
+    else if (redis.status === 'end') onEnd();
+  });
+}
+function logStartupFailure(error) {
+  const allowed = ['REDIS_READY_TIMEOUT', 'REDIS_CONNECTION_CLOSED', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'EADDRINUSE'];
+  const code = allowed.includes(error?.code) ? error.code : 'STARTUP_FAILED';
+  console.error(JSON.stringify({event: 'queue-api-start-failed', code}));
+}
 async function main() {
   const config = loadConfig(), redis = connect(config), queues = createQueues(config, redis);
   const store = createStore(redis, queues, config);
+  await waitForRedisReady(redis);
   await redis.ping();
   const server = createApp({config, redis, queues, store}).listen(config.port, '0.0.0.0');
   const stop = () => server.close(async () => {await Promise.all(Object.values(queues).map(q => q.close())); await redis.quit();});
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
 }
-if (require.main === module) main().catch(() => {console.error('queue-api-start-failed'); process.exitCode = 1;});
-module.exports = {createApp};
+if (require.main === module) {
+  main().catch(error => {
+    logStartupFailure(error);
+    process.exit(1);
+  });
+}
+module.exports = {createApp, waitForRedisReady, logStartupFailure};
