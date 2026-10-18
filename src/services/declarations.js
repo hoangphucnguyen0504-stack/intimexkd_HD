@@ -55,10 +55,15 @@ function createDeclarations({redis, config, store}) {
   const idOf = input => input.id ? (/^[a-f0-9]{64}$/.test(input.id) ? input.id : fail('INVALID_DECLARATION', 400)) : (/^[a-f0-9]{64}$/.test(input.key || '') ? input.key : hash(text(input.key, 300)));
   async function health() {
     try {
-      const settings = await redis.config('GET', 'appendonly', 'appendfsync', 'maxmemory-policy');
+      // Independent, fresh read-only probes: overlap transport latency without
+      // caching durability state or moving the write/AOF acknowledgment barrier.
+      const [settings, persistence, command] = await Promise.all([
+        redis.config('GET', 'appendonly', 'appendfsync', 'maxmemory-policy'),
+        redis.info('persistence'),
+        redis.call('COMMAND', 'INFO', 'WAITAOF'),
+      ]);
       const values = Object.fromEntries(Array.from({length: settings.length / 2}, (_, i) => [settings[i * 2], settings[i * 2 + 1]]));
-      const info = Object.fromEntries(String(await redis.info('persistence')).split(/\r?\n/).filter(line => line.includes(':')).map(line => { const at = line.indexOf(':'); return [line.slice(0, at), line.slice(at + 1)]; }));
-      const command = await redis.call('COMMAND', 'INFO', 'WAITAOF');
+      const info = Object.fromEntries(String(persistence).split(/\r?\n/).filter(line => line.includes(':')).map(line => { const at = line.indexOf(':'); return [line.slice(0, at), line.slice(at + 1)]; }));
       const supported = Array.isArray(command?.[0]) && String(command[0][0]).toLowerCase() === 'waitaof';
       return {version: 1, available: supported && values.appendonly === 'yes' && values.appendfsync === 'always' && values['maxmemory-policy'] === 'noeviction' && info.aof_enabled === '1' && info.aof_last_write_status === 'ok'};
     } catch { return {version: 1, available: false}; }
