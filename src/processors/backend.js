@@ -26,6 +26,14 @@ function createBackendProcessor(config, fetchImpl = fetch) {
     try {result = await response.json();} catch {result = null;}
     if (!response.ok || result?.ok !== true) {
       const knownRejected = result?.retryable === true && result?.unknown !== true;
+      // A durable declaration waiting for local quota has not failed its business
+      // attempt. Let the worker delay it without consuming a BullMQ retry.
+      if (response.ok && type === 'qr-recovery' && job.data.payload?.durable === true &&
+          knownRejected && result.code === 'QR_JOB_QUOTA_RETRY') {
+        const delay = Math.ceil(Number(response.headers.get('retry-after')) * 1000);
+        throw Object.assign(Error('SHEETS_LOCAL_RATE_LIMIT'), {code:'SHEETS_LOCAL_RATE_LIMIT', retryable:true,
+          retryAfterMs: Number.isSafeInteger(delay) && delay > 0 ? delay : 5000});
+      }
       if (delivery && knownRejected) {
         const next = {...job.data, effect: {status: 'rejected', at: Date.now()}};
         await job.updateData(next); job.data = next;

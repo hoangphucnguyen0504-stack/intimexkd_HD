@@ -40,7 +40,9 @@ if cooldown then
  if type(value)=='table' and tonumber(value['until']) and tonumber(value['until'])>now then return math.ceil((tonumber(value['until'])-now)/1000) end
 end
 redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',now-60000)
-if redis.call('ZCARD',KEYS[1])>=tonumber(ARGV[1]) then
+-- Background work shares the same total window, but leaves foreground capacity.
+local cap=tonumber(ARGV[4]) or tonumber(ARGV[1])
+if redis.call('ZCARD',KEYS[1])>=cap then
  local first=redis.call('ZRANGE',KEYS[1],0,0,'WITHSCORES'); return math.max(1,math.ceil((tonumber(first[2])+60000-now)/1000))
 end
 redis.call('ZADD',KEYS[1],now,ARGV[2]); redis.call('PEXPIRE',KEYS[1],61000); return 0`;
@@ -98,9 +100,14 @@ function createCoordination(redis, config) {
       case 'quotaReserve': {
         if (input.kind !== 'read' && input.kind !== 'write') invalid();
         const limit = integer(input.limit, 50);
+        const priority = input.priority === undefined ? 'interactive' : input.priority;
+        if (!['interactive', 'background'].includes(priority)) invalid();
         const configured = integer(input.kind === 'read' ? config.reads : config.writes, 50);
+        const ceiling = Math.min(limit, configured);
+        const reserve = Math.min(ceiling - 1, config.foregroundReserve ?? 8);
+        const cap = priority === 'background' ? ceiling - reserve : ceiling;
         const delay = Number(await redis.eval(QUOTA, 2, config.prefix + ':quota:' + input.kind,
-          stateKey('sheets-cooldown/' + input.kind), Math.min(limit, configured), randomUUID(), Date.now()));
+          stateKey('sheets-cooldown/' + input.kind), ceiling, randomUUID(), Date.now(), cap));
         return {accepted: delay === 0, retryAfterSeconds: delay};
       }
       default: invalid();

@@ -23,8 +23,13 @@ function processor({store, execute, queue}) {
     } catch (error) {
       const code = String(error.code || 'PROCESSOR_FAILED').slice(0, 100);
       if (['SHEETS_LOCAL_RATE_LIMIT','SHEET_CACHE_BUSY'].includes(code)) {
+        const queuedAt = Number(job.timestamp || job.data.availableAt);
+        if (Number.isFinite(queuedAt) && queuedAt > 0 && Date.now() - queuedAt >= 86400000) {
+          await status('failed','SHEETS_ADMISSION_DEADLINE');
+          throw new UnrecoverableError('SHEETS_ADMISSION_DEADLINE');
+        }
         await status('delayed',code);
-        await job.moveToDelayed(Date.now()+Math.max(1000,error.retryAfterMs||5000),token);
+        await job.moveToDelayed(Date.now()+Math.max(1000,error.retryAfterMs||5000)+Math.floor(Math.random()*500),token);
         throw new DelayedError();
       }
       if (error.unknown || error.retryable !== true) {

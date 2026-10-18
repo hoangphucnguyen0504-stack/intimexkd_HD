@@ -12,6 +12,7 @@ function config(env = process.env) {
   return {namespace, redisUrl: env.REDIS_URL, token: env.QUEUE_API_TOKEN,
     prefix: 'hdoi-' + namespace, port: integer('PORT', 3100, 65535),
     concurrency: integer('WORKER_CONCURRENCY', 2, 16),
+    foregroundReserve: integer('SHEETS_FOREGROUND_RESERVE', 8, 40),
     reads: integer('SHEETS_READS_PER_MINUTE', 40, 50),
     writes: integer('SHEETS_WRITES_PER_MINUTE', 40, 50),
     backendUrl: env.BACKEND_URL, backendToken: env.BACKEND_WORKER_TOKEN};
