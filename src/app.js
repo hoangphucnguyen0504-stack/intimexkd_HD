@@ -14,11 +14,13 @@ function createApp({redis, queues, store, config}) {
   const route = handler => (req, res, next) => Promise.resolve(handler(req, res)).catch(next);
   const coordination = require('./services/coordination').createCoordination(redis, config);
   const outbox = require('./services/sheetOutbox').createSheetOutbox({redis, store, queues});
+  const declarations = require('./services/declarations').createDeclarations({redis, config, store});
   app.post('/v1/coordination', route(async (req, res) => {
     const body = req.body;
     if (body.namespace !== config.namespace) return res.status(403).json({ok:false,code:'NAMESPACE_MISMATCH'});
     let value;
-    if (body.op === 'commit') value = await store.commit(body);
+    if (['declarationAccept','declarationGet','declarationUpdate'].includes(body.op)) value = await declarations.execute(body);
+    else if (body.op === 'commit') value = await store.commit(body);
     else if (typeof body.op === 'string' && body.op.startsWith('sheet')) value = await outbox.execute(body.op, body);
     else if (body.op === 'queueDiagnostics') {
       const groups=[];
@@ -39,7 +41,11 @@ function createApp({redis, queues, store, config}) {
     } else value = await coordination.execute(body);
     res.json({ok:true,value});
   }));
-  app.get('/health/ready', route(async (_req, res) => {await redis.ping(); res.json({ok: true});}));
+  app.get('/health/ready', route(async (_req, res) => {
+    await redis.ping();
+    const durableDeclarations = await declarations.health();
+    res.json({ok: true, durableDeclarations});
+  }));
   app.post('/v1/jobs', route(async (req, res) => {
     const key = config.prefix + ':api-window';
     const hits = await redis.eval("local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('PEXPIRE',KEYS[1],1000) end; return n", 1, key);
