@@ -80,8 +80,19 @@ function createApp({redis, queues, store, config}) {
     res.json({ok: true, ...await store.retry(req.params.id, true)});
   }));
   app.get('/v1/metrics', route(async (_req, res) => {
-    res.json({ok: true, dispatchPending: await redis.zcard(store.base + 'dispatch'),
-      sheets: await queues.sheets.getJobCounts(), background: await queues.background.getJobCounts()});
+    let oldestOutstandingAgeMs = null, unknownCount = 0;
+    for (const kind of ['sheets', 'background']) {
+      unknownCount += Number(await redis.zcard(store.base + 'queue-status:' + kind + ':unknown') || 0);
+      for (const state of ['waiting', 'delayed', 'active', 'unknown']) {
+        const [id] = await redis.zrange(store.base + 'queue-status:' + kind + ':' + state, 0, 0);
+        const first = id && await store.get(id);
+        if (!first) continue;
+        const age = Math.max(0, Date.now() - Number(first.createdAt));
+        if (oldestOutstandingAgeMs == null || age > oldestOutstandingAgeMs) oldestOutstandingAgeMs = age;
+      }
+    }
+    res.json({ok: true, dispatchPending: await redis.zcard(store.base + 'dispatch'), oldestOutstandingAgeMs, unknownCount,
+      sheets: queues.sheets ? await queues.sheets.getJobCounts() : {}, background: queues.background ? await queues.background.getJobCounts() : {}});
   }));
   app.use((err, _req, res, _next) => {
     const status = err.status || (err.type === 'entity.parse.failed' ? 400 : 503);
