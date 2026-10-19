@@ -96,7 +96,8 @@ test('native dispatcher reconstructs the persisted intent and raw hydration afte
   const f=fixture(),ack=await f.service.accept(input()),call=f.calls.find(c=>c[0]==='eval'),native=JSON.parse(call[17]);
   const pending=new Set([ack.id]),deliveries=[];
   const redis={hgetall:async()=>({data:JSON.stringify(native),queue:'background',status:'waiting'}),
-    zrange:async key=>key.endsWith(':dispatch')?[...pending]:[],zrem:async(_key,id)=>pending.delete(id)};
+    zrange:async key=>key.endsWith(':dispatch')?[...pending]:[],zrem:async(_key,id)=>pending.delete(id),
+    eval:async function ack(_script,_n,_key,id){return this.zrem(_key,id);}};
   const store=require('../src/services/store').createStore(redis,{background:{add:async(...args)=>deliveries.push(args)}},{prefix:'test'});
   assert.equal(await store.dispatch(),1);assert.equal(deliveries[0][0],'qr-recovery');assert.deepEqual(deliveries[0][1].payload,{key:ack.id,durable:true});assert.equal(deliveries[0][2].jobId,ack.id);assert.equal(pending.size,0);
   const rebuilt=createDeclarations(f.options);assert.deepEqual((await rebuilt.get({id:deliveries[0][1].payload.key})).job,input().job);

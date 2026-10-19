@@ -58,3 +58,27 @@ test('real Redis: parallel dedup, intent restart recovery, entity ordering and s
   await store.status(source.data,'completed','',{queueName:'sheets',token:'current-token'});
   assert.equal(await store.ready(dependent.data),true);
 });
+test('real Redis: duplicate dispatch after add-before-ack crash keeps one BullMQ job', {skip: !redisUrl}, async t => {
+  const url = new URL(redisUrl);
+  assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname), 'Only explicitly configured local disposable Redis is allowed');
+  const config = {redisUrl, prefix: 'hdoi-test-' + randomUUID(), reads: 2, writes: 2};
+  const redis = connect(config), queues = createQueues(config, redis), store = createStore(redis, queues, config);
+  t.after(async () => {
+    await Promise.all(Object.values(queues).map(q => q.close()));
+    let cursor = '0';
+    do {const [next, keys] = await redis.scan(cursor, 'MATCH', config.prefix + ':*', 'COUNT', 100); cursor = next; if (keys.length) await redis.del(...keys);} while (cursor !== '0');
+    await redis.quit();
+  });
+  const input = {type: 'qr-recovery', key: 'crash-ack', payload: {key: 'crash-ack'}};
+  const receipt = await store.submit(input);
+  assert.equal(await store.dispatch(), 1);
+  await redis.zadd(store.base + 'dispatch', 1, receipt.id);
+  assert.equal(await store.dispatch(), 1);
+  assert.equal(await store.dispatch(), 0);
+  const job = await queues.background.getJob(receipt.id);
+  assert.ok(job);
+  await store.status((await store.get(receipt.id)).data, 'completed');
+  const replay = await store.commit({idempotencyKey: randomUUID(), operations: [{kind: 'job', data: input}]});
+  assert.equal(replay.jobs[0].id, receipt.id);
+  assert.equal(await redis.zscore(store.base + 'dispatch', receipt.id), null);
+});

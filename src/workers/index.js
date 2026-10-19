@@ -96,7 +96,7 @@ async function main() {
   let stopped = false;
   await require('node:fs/promises').writeFile('/tmp/hdoi-worker-heartbeat', String(Date.now()));
   const heartbeat = setInterval(() => require('node:fs').writeFile('/tmp/hdoi-worker-heartbeat', String(Date.now()), () => {}), 10000);
-  // Dispatcher only scans Redis's pending-intent index, never Neon or Sheets.
+  // Same store.dispatch as commit: scans Redis pending-intent index, never Neon or Sheets.
   const dispatch = async () => {
     while (!stopped) {
       try {await store.dispatch();} catch {console.error(JSON.stringify({event: 'dispatch-unavailable'}));}

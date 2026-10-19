@@ -81,16 +81,25 @@ function createStore(redis, queues, config) {
       digest, JSON.stringify(actions), JSON.stringify(fingerprints), JSON.stringify(owned), JSON.stringify(receipt));
     if (result === 'CONFLICT') throw Object.assign(Error('IDEMPOTENCY_CONFLICT'), {status: 409});
     if (result === 'LEASE_LOST') throw Object.assign(Error('HDOI_LEASE_LOST'), {status: 409});
-    return JSON.parse(result);
+    const saved = JSON.parse(result);
+    if (config.dispatchOnCommit) {
+      try { await withTimeout(dispatch(), config.dispatchTimeoutMs || 1500); }
+      catch { console.error(JSON.stringify({event: 'dispatch-on-commit-failed'})); }
+    }
+    return saved;
   }
   async function dispatch(limit = 100) {
     const ids = await redis.zrange(base + 'dispatch', 0, limit - 1);
     for (const id of ids) {
       const row = await get(id);
       if (!row) throw Error('INTENT_MISSING');
-      await queues[row.queue].add(row.data.type, row.data, {jobId: id, attempts: row.data.maxAttempts,
-        delay: Math.max(0, row.data.availableAt - Date.now())});
-      await redis.zrem(base + 'dispatch', id);
+      try {
+        await queues[row.queue].add(row.data.type, row.data, {jobId: id, attempts: row.data.maxAttempts,
+          delay: Math.max(0, row.data.availableAt - Date.now())});
+      } catch (error) {
+        if (!alreadyQueued(error)) throw error;
+      }
+      await redis.eval(DISPATCH_ACK, 1, base + 'dispatch', id);
     }
     const controls = await redis.zrange(base+'controls',0,limit-1);
     for (const controlId of controls) {
@@ -150,6 +159,19 @@ function createStore(redis, queues, config) {
   }
   return {get, submit, commit, dispatch, ready, status, retry, history, events, record, base};
 }
+function alreadyQueued(error) {
+  return Boolean(error) && (error.name === 'JobIdAlreadyExistsError' || /already exists/i.test(String(error.message || '')));
+}
+function withTimeout(promise, ms) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(Error('DISPATCH_TIMEOUT'), {code: 'DISPATCH_TIMEOUT'})), ms);
+    }),
+  ]);
+}
+const DISPATCH_ACK = `if redis.call('ZSCORE',KEYS[1],ARGV[1]) then redis.call('ZREM',KEYS[1],ARGV[1]) return 1 end return 0`;
 const COMMIT = `
 local prior=redis.call('HGET',KEYS[1],'digest')
 if prior then if prior~=ARGV[1] then return 'CONFLICT' end return redis.call('HGET',KEYS[1],'receipt') end
@@ -178,4 +200,4 @@ function publicStatus(row) {
   return {id: row.id, type: row.data.type, status: row.status, error: row.error || '',
     createdAt: Number(row.createdAt), updatedAt: Number(row.updatedAt || row.createdAt)};
 }
-module.exports = {createStore, publicStatus, RESERVE, COMMIT, STATUS};
+module.exports = {createStore, publicStatus, RESERVE, COMMIT, STATUS, DISPATCH_ACK};
