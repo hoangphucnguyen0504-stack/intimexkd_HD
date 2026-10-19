@@ -48,17 +48,21 @@ function processor({store, execute, queue}) {
     }
   };
 }
-function sheetsWorkerConcurrency(){
-  return process.env.BUSINESS_DATA_PROVIDER==='datadongbo'?4:1;
+function sheetsWorkerConcurrency(config){
+  // DataDongBo has no Google quota. Parallel writes stop only when this process is full.
+  if(process.env.BUSINESS_DATA_PROVIDER==='datadongbo')return config.concurrency;
+  return 1;
 }
 async function main() {
   const config = loadConfig(), redis = connect(config, true), queues = createQueues(config, redis);
   const store = createStore(redis, queues, config);
   await redis.ping();
   const useDataDongBo=process.env.BUSINESS_DATA_PROVIDER==='datadongbo';
-  const sheetsConcurrency=sheetsWorkerConcurrency();
-  // Global limits are Redis-backed; adding replicas cannot increase them.
-  await queues.sheets.setGlobalConcurrency(sheetsConcurrency);
+  const sheetsConcurrency=sheetsWorkerConcurrency(config);
+  // Google mode keeps one Sheets write at a time across every replica.
+  // DataDongBo clears that cap, including a value left in Redis by an older worker.
+  if(useDataDongBo){await queues.sheets.removeGlobalConcurrency();await queues.sheets.removeGlobalRateLimit();}
+  else await queues.sheets.setGlobalConcurrency(1);
   await queues.background.setGlobalConcurrency(config.concurrency);
   const sheets=useDataDongBo
     ? require('../processors/datadongbo').createDataDongBoProcessor()

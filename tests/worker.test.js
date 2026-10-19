@@ -26,15 +26,16 @@ test('blocked dependency defers without calling business processor', async () =>
   await assert.rejects(s.run(s.job, 'token'), error => error.name === 'DelayedError');
   assert.equal(calls, 0); assert.equal(s.job.delayed, true);
 });
-test('datadongbo sheets concurrency is 4 and google stays 1', () => {
+test('datadongbo uses worker capacity and google stays at 1', () => {
   const previous = process.env.BUSINESS_DATA_PROVIDER;
+  const capacity = {concurrency: 8};
   try {
     process.env.BUSINESS_DATA_PROVIDER = 'datadongbo';
-    assert.equal(sheetsWorkerConcurrency(), 4);
+    assert.equal(sheetsWorkerConcurrency(capacity), 8);
     process.env.BUSINESS_DATA_PROVIDER = 'sheets';
-    assert.equal(sheetsWorkerConcurrency(), 1);
+    assert.equal(sheetsWorkerConcurrency(capacity), 1);
     delete process.env.BUSINESS_DATA_PROVIDER;
-    assert.equal(sheetsWorkerConcurrency(), 1);
+    assert.equal(sheetsWorkerConcurrency(capacity), 1);
   } finally {
     if (previous === undefined) delete process.env.BUSINESS_DATA_PROVIDER;
     else process.env.BUSINESS_DATA_PROVIDER = previous;
