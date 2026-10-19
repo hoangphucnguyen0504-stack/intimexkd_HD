@@ -17,9 +17,11 @@ VN = timezone(timedelta(hours=7))
 def warn(msg):
     sys.stderr.write(msg + '\n')
 
-def run(args, timeout=20):
+def run(args, timeout=20, stdin=None):
     try:
-        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(
+            args, input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, timeout=timeout)
         return p.returncode, p.stdout, p.stderr
     except Exception as exc:
         return 1, '', type(exc).__name__
@@ -174,8 +176,8 @@ def install_cron(minutes):
     with open(INTERVAL, 'w', encoding='utf-8') as fh:
         fh.write(str(minutes) + '\n')
     payload = ''.join(kept) + line
-    p = subprocess.run(['crontab', '-'], input=payload, text=True, capture_output=True)
-    if p.returncode != 0:
+    code, _, err = run(['crontab', '-'], stdin=payload)
+    if code != 0:
         raise SystemExit('crontab_install_failed')
     print(json.dumps({'installed': True, 'intervalMin': minutes, 'log': LOG_PATH}))
 
@@ -194,7 +196,7 @@ def main():
         code, current, _ = run(['crontab', '-l'])
         if code == 0:
             kept = ''.join(row for row in current.splitlines(True) if 'queue-sample.py' not in row)
-            subprocess.run(['crontab', '-'], input=kept, text=True, capture_output=True)
+            run(['crontab', '-'], stdin=kept)
         print(json.dumps({'stopped': True}))
         return
     if not os.path.isfile(ENABLED):
