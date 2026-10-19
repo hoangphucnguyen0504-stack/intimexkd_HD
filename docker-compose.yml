@@ -8,6 +8,9 @@ x-app: &app
   init: true
   restart: unless-stopped
   environment: &environment
+    BUSINESS_DATA_PROVIDER: ${BUSINESS_DATA_PROVIDER:-sheets}
+    DATA_DONG_BO_URL: ${DATA_DONG_BO_URL:-}
+    DATA_DONG_BO_TOKEN: ${DATA_DONG_BO_TOKEN:-}
     NODE_ENV: production
     PORT: "3100"
     REDIS_URL: redis://redis:6379
@@ -20,11 +23,11 @@ x-app: &app
     SHEETS_READS_PER_MINUTE: ${SHEETS_READS_PER_MINUTE:-40}
     SHEETS_WRITES_PER_MINUTE: ${SHEETS_WRITES_PER_MINUTE:-40}
     GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON:-}
-  mem_limit: 512m
-  cpus: "1.0"
-  depends_on:
-    redis:
-      condition: service_healthy
+    # Khống chế Garbage Collection của Node.js tránh phình RAM ảo
+    NODE_OPTIONS: "--max-old-space-size=400"
+  
+  # Bảo vệ hai container Node.js này khỏi bị Linux OOM-killer ưu tiên hạ sát
+  oom_score_adj: -300
   stop_grace_period: 60s
   security_opt:
     - no-new-privileges:true
@@ -33,8 +36,11 @@ x-app: &app
   logging:
     driver: json-file
     options:
-      max-size: "10m"
-      max-file: "3"
+      max-size: "5m"        # Thu nhỏ log để giảm tải I/O ghi đĩa
+      max-file: "2"
+  depends_on:
+    redis:
+      condition: service_healthy
 
 services:
   queue-api:
@@ -42,9 +48,15 @@ services:
     command: ["node", "src/app.js"]
     ports:
       - "127.0.0.1:3100:3100"
+    cpu_shares: 700         # Ưu tiên CPU cao hơn cho Web API để trả kết quả nhanh
+    deploy:
+      resources:
+        limits:
+          cpus: "0.85"      # Được phép ăn tối đa 85% CPU của Core duy nhất khi tải đỉnh
+          memory: 512m
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/health/live', {signal: AbortSignal.timeout(3000)}).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
-      interval: 10s
+      interval: 15s         # Tăng interval lên một chút để bớt tốn CPU chạy test liên tục
       timeout: 5s
       retries: 3
       start_period: 30s
@@ -52,43 +64,54 @@ services:
   queue-worker:
     <<: *app
     command: ["node", "src/workers/index.js"]
+    cpu_shares: 300         # Khi API bận, Worker sẽ tạm nhường CPU, khi API rảnh Worker chiếm hết
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 512m
     healthcheck:
       test: ["CMD", "node", "-e", "try { const t = Number(require('node:fs').readFileSync('/tmp/hdoi-worker-heartbeat', 'utf8').trim()); const age = Date.now() - t; process.exit(Number.isFinite(t) && t > 0 && age >= 0 && age < 45000 ? 0 : 1); } catch { process.exit(1); }"]
-      interval: 10s
+      interval: 15s
       timeout: 5s
       retries: 3
       start_period: 30s
 
   redis:
-    image: redis:7.4-bookworm
-    mem_limit: 1g
-    cpus: "1.0"
+    image: redis:7.4-alpine # Đổi sang Alpine để bản thân image Redis nhẹ nhất có thể (tiết kiệm RAM nền)
     restart: unless-stopped
+    cpu_shares: 1000        # Redis cần xử lý cực nhanh để giải phóng tài nguyên cho 2 app trên
+    oom_score_adj: -500     # Bảo vệ Redis cao nhất, vì mất Redis là hỏng toàn bộ Queue
     command:
       - redis-server
       - --appendonly
       - "yes"
       - --appendfsync
-      - always
+      - everysec      # THAY ĐỔI QUAN TRỌNG: Đổi từ 'always' sang 'everysec' để giải cứu I/O ổ cứng VPS
       - --maxmemory-policy
       - noeviction
       - --maxmemory
-      - 512mb
+      - 256mb         # Hạ giới hạn xuống 256MB để dành RAM thực cho Node.js (vì bạn đã chặn eviction)
       - --save
       - ""
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"      # Giới hạn trần CPU cho Redis
+          memory: 384m      # Khống chế tổng RAM (bao gồm cả overhead buffer)
     volumes:
       - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
+      interval: 10s
       timeout: 3s
-      retries: 12
+      retries: 5
     stop_grace_period: 60s
     logging:
       driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
+        max-size: "5m"
+        max-file: "2"
 
 volumes:
   redis-data:

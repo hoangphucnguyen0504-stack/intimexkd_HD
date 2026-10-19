@@ -55,8 +55,10 @@ async function main() {
   // Global limits are Redis-backed; adding replicas cannot increase them.
   await queues.sheets.setGlobalConcurrency(1);
   await queues.background.setGlobalConcurrency(config.concurrency);
-  const google = await createGoogleAdapter();
-  const sheets = createSheetsProcessor({google, governor: createGovernor(redis, config)});
+  const useDataDongBo=process.env.BUSINESS_DATA_PROVIDER==='datadongbo';
+  const sheets=useDataDongBo
+    ? require('../processors/datadongbo').createDataDongBoProcessor()
+    : createSheetsProcessor({google:await createGoogleAdapter(),governor:createGovernor(redis,config)});
   const coordination = require('../services/coordination').createCoordination(redis, config);
   const guardedSheets = async job => {
     const {hash} = require('../utils/protocol');
@@ -69,7 +71,7 @@ async function main() {
       let result;
       try {result = await sheets(job);}
       catch(error) {
-        if(error.status===429){const seconds=Math.max(1,Math.ceil((error.retryAfterMs||60000)/1000));await coordination.execute({op:'set',key:'sheets-cooldown/'+(error.write?'write':'read'),value:{until:Date.now()+seconds*1000},ttl:seconds}).catch(()=>{});}
+        if(!useDataDongBo&&error.status===429){const seconds=Math.max(1,Math.ceil((error.retryAfterMs||60000)/1000));await coordination.execute({op:'set',key:'sheets-cooldown/'+(error.write?'write':'read'),value:{until:Date.now()+seconds*1000},ttl:seconds}).catch(()=>{});}
         throw error;
       }
       if (lost) throw Object.assign(Error('SHEET_LEASE_LOST'),{code:'SHEET_LEASE_LOST',unknown:true});
