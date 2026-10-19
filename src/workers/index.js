@@ -104,7 +104,13 @@ async function main() {
     });
     return worker;
   });
-  let stopped = false;
+  let stopped = false, linkBeat;
+  if(useDataDongBo){
+    const beat=()=>sheets.ping().catch(()=>{});
+    beat();
+    linkBeat=setInterval(beat,30000);
+    linkBeat.unref?.();
+  }
   await require('node:fs/promises').writeFile('/tmp/hdoi-worker-heartbeat', String(Date.now()));
   const heartbeat = setInterval(() => require('node:fs').writeFile('/tmp/hdoi-worker-heartbeat', String(Date.now()), () => {}), 10000);
   // Same store.dispatch as commit: scans Redis pending-intent index, never Neon or Sheets.
@@ -116,7 +122,7 @@ async function main() {
   };
   const loop = dispatch();
   async function stop() {
-    if (stopped) return; stopped = true; clearInterval(heartbeat);
+    if (stopped) return; stopped = true; clearInterval(heartbeat); clearInterval(linkBeat);
     await Promise.all(workers.map(worker => worker.close())); await loop;
     await Promise.all(Object.values(queues).map(queue => queue.close())); await redis.quit();
   }

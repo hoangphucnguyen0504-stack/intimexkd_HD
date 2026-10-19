@@ -15,6 +15,15 @@ test('HDoi holds unbound old jobs instead of writing either database',async()=>{
  let calls=0;const execute=createDataDongBoProcessor({env,fetch:async()=>{calls++;}}),j=job();delete j.data.payload.storageProvider;
  await assert.rejects(()=>execute(j),e=>e.code==='STORAGE_PROVIDER_MISMATCH'&&e.unknown);assert.equal(calls,0);
 });
+test('HDoi ping announces the worker without writing a row',async()=>{
+ const calls=[],execute=createDataDongBoProcessor({env,fetch:async(url,options)=>{calls.push({url,options});return new Response(JSON.stringify({ok:true}));}});
+ await execute.ping();
+ assert.equal(calls.length,1);
+ assert.equal(calls[0].url,env.DATA_DONG_BO_URL+'/v1/cham-cong/ping');
+ assert.equal(calls[0].options.method,'GET');
+ assert.equal(calls[0].options.headers['X-DataDongBo-Client'],'hdoi-worker');
+ assert.equal(calls[0].options.body,undefined);
+});
 test('HDoi cannot confirm a response without durable database acknowledgement',async()=>{
  const execute=createDataDongBoProcessor({env,fetch:async()=>new Response(JSON.stringify({ok:true}))});await assert.rejects(()=>execute(job()),{code:'DATA_DONG_BO_NOT_DURABLE'});
 });

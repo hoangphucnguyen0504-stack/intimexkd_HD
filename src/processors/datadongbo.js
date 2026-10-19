@@ -15,7 +15,7 @@ function createDataDongBoProcessor({env=process.env,fetch:fetchImpl=globalThis.f
       {status:response.status,retryable:response.status>=500||response.status===429,retryAfterMs:Math.max(0,Number(response.headers.get('retry-after'))||0)*1000});
     return result;
   }
-  return async job=>{
+  const run=async job=>{
     const data=job.data,p=data?.payload;
     if(data?.type!=='sheet-write'||p?.storageProvider!=='datadongbo')throw fault('STORAGE_PROVIDER_MISMATCH',{unknown:true});
     if(!p.entity||!Array.isArray(p.headers)||p.headers[0]!=='ID'||!Array.isArray(p.rowValues)||!['append','update','delete'].includes(p.op))throw fault('DATA_DONG_BO_INVALID_JOB');
@@ -32,5 +32,8 @@ function createDataDongBoProcessor({env=process.env,fetch:fetchImpl=globalThis.f
     await job.updateData(next);job.data=next;
     return {status:'confirmed',target:'datadongbo',sheetsStatus:'pending'};
   };
+  // Sheet jobs no longer run for ordinary writes, so the worker announces itself on a timer.
+  run.ping=()=>call('/v1/cham-cong/ping');
+  return run;
 }
 module.exports={createDataDongBoProcessor};
