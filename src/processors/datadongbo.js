@@ -8,7 +8,7 @@ function createDataDongBoProcessor({env=process.env,fetch:fetchImpl=globalThis.f
   if(!env.DATA_DONG_BO_TOKEN||env.DATA_DONG_BO_TOKEN.length<32||env.DATA_DONG_BO_TOKEN.trim()!==env.DATA_DONG_BO_TOKEN)throw fault('DATA_DONG_BO_CONFIG');
   async function call(path,body){
     let response;try{response=await fetchImpl(url.origin+path,{method:body?'POST':'GET',redirect:'error',signal:AbortSignal.timeout(15000),
-      headers:{Authorization:'Bearer '+env.DATA_DONG_BO_TOKEN,...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});}
+      headers:{Authorization:'Bearer '+env.DATA_DONG_BO_TOKEN,'X-DataDongBo-Client':'hdoi-worker',...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});}
     catch{throw fault('DATA_DONG_BO_NETWORK',{retryable:true});}
     let result;try{const parts=[];let bytes=0;for await(const chunk of response.body){bytes+=chunk.length;if(bytes>262144)throw Error();parts.push(Buffer.from(chunk));}result=JSON.parse(Buffer.concat(parts).toString());}catch{throw fault('DATA_DONG_BO_RESPONSE',{retryable:true});}
     if(!response.ok||result.ok!==true)throw fault('DATA_DONG_BO_'+(/^[A-Z][A-Z0-9_]{0,59}$/.test(result.code||'')?result.code:'HTTP_'+response.status),

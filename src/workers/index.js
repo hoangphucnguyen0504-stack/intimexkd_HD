@@ -48,19 +48,24 @@ function processor({store, execute, queue}) {
     }
   };
 }
+function sheetsWorkerConcurrency(){
+  return process.env.BUSINESS_DATA_PROVIDER==='datadongbo'?4:1;
+}
 async function main() {
   const config = loadConfig(), redis = connect(config, true), queues = createQueues(config, redis);
   const store = createStore(redis, queues, config);
   await redis.ping();
-  // Global limits are Redis-backed; adding replicas cannot increase them.
-  await queues.sheets.setGlobalConcurrency(1);
-  await queues.background.setGlobalConcurrency(config.concurrency);
   const useDataDongBo=process.env.BUSINESS_DATA_PROVIDER==='datadongbo';
+  const sheetsConcurrency=sheetsWorkerConcurrency();
+  // Global limits are Redis-backed; adding replicas cannot increase them.
+  await queues.sheets.setGlobalConcurrency(sheetsConcurrency);
+  await queues.background.setGlobalConcurrency(config.concurrency);
   const sheets=useDataDongBo
     ? require('../processors/datadongbo').createDataDongBoProcessor()
     : createSheetsProcessor({google:await createGoogleAdapter(),governor:createGovernor(redis,config)});
   const coordination = require('../services/coordination').createCoordination(redis, config);
   const guardedSheets = async job => {
+    if(useDataDongBo) return sheets(job);
     const {hash} = require('../utils/protocol');
     const payload = job.data.payload, owner = require('node:crypto').randomUUID();
     const name = 'sheet-batch/' + hash(payload.spreadsheetId);
@@ -83,7 +88,7 @@ async function main() {
   const background = createBackendProcessor(config);
   const workers = Object.entries({sheets:guardedSheets, background}).map(([kind, execute]) => {
     const worker = new Worker(kind, processor({store, execute, queue: queues[kind]}), {
-      connection: redis, prefix: config.prefix, concurrency: kind === 'sheets' ? 1 : config.concurrency,
+      connection: redis, prefix: config.prefix, concurrency: kind === 'sheets' ? sheetsConcurrency : config.concurrency,
       lockDuration: 180000, stalledInterval: 30000, maxStalledCount: 1,
       settings: {backoffStrategy: (attempt, _type, err, job) => retryDelay(attempt, err.retryAfterMs || job?.data.retryAfterMs || 0)}
     });
@@ -114,4 +119,4 @@ async function main() {
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
 }
 if (require.main === module) main().catch(() => {console.error('queue-worker-start-failed'); process.exitCode = 1;});
-module.exports = {processor};
+module.exports = {processor, sheetsWorkerConcurrency};

@@ -1,6 +1,6 @@
 'use strict';
 const {test} = require('node:test'); const assert = require('node:assert/strict');
-const {processor} = require('../src/workers');
+const {processor, sheetsWorkerConcurrency} = require('../src/workers');
 function setup(execute, ready = true) {
   const states = []; const store = {ready: async () => ready, status: async (_data, status, error) => states.push({status, error})};
   const job = {id: 'one', data: {id: 'one'}, attemptsMade: 0, opts: {attempts: 3},
@@ -25,4 +25,18 @@ test('blocked dependency defers without calling business processor', async () =>
   let calls = 0; const s = setup(async () => calls++, false);
   await assert.rejects(s.run(s.job, 'token'), error => error.name === 'DelayedError');
   assert.equal(calls, 0); assert.equal(s.job.delayed, true);
+});
+test('datadongbo sheets concurrency is 4 and google stays 1', () => {
+  const previous = process.env.BUSINESS_DATA_PROVIDER;
+  try {
+    process.env.BUSINESS_DATA_PROVIDER = 'datadongbo';
+    assert.equal(sheetsWorkerConcurrency(), 4);
+    process.env.BUSINESS_DATA_PROVIDER = 'sheets';
+    assert.equal(sheetsWorkerConcurrency(), 1);
+    delete process.env.BUSINESS_DATA_PROVIDER;
+    assert.equal(sheetsWorkerConcurrency(), 1);
+  } finally {
+    if (previous === undefined) delete process.env.BUSINESS_DATA_PROVIDER;
+    else process.env.BUSINESS_DATA_PROVIDER = previous;
+  }
 });
