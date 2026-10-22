@@ -18,7 +18,7 @@ function createDataDongBoProcessor({env=process.env,fetch:fetchImpl=globalThis.f
   const run=async job=>{
     const data=job.data,p=data?.payload;
     if(data?.type!=='sheet-write'||p?.storageProvider!=='datadongbo')throw fault('STORAGE_PROVIDER_MISMATCH',{unknown:true});
-    if(!p.entity||!Array.isArray(p.headers)||p.headers[0]!=='ID'||!Array.isArray(p.rowValues)||!['append','update','delete'].includes(p.op))throw fault('DATA_DONG_BO_INVALID_JOB');
+    if(typeof data.key!=='string'||!data.key||!p.entity||!Array.isArray(p.headers)||p.headers[0]!=='ID'||new Set(p.headers).size!==p.headers.length||!Array.isArray(p.rowValues)||p.rowValues.length>p.headers.length||!['append','update','delete'].includes(p.op)||!p.recordId||(p.op!=='delete'&&String(p.rowValues[0])!==String(p.recordId)))throw fault('DATA_DONG_BO_INVALID_JOB');
     const requestId='hdoi-'+createHash('sha256').update(data.key).digest('hex');
     const body={requestId,spreadsheetId:p.spreadsheetId,entity:p.entity,headers:p.headers,changes:[{op:p.op,recordId:String(p.recordId),rowValues:p.rowValues}],guards:[]};
     let receipt;

@@ -2,6 +2,14 @@ const {test}=require('node:test'),assert=require('node:assert/strict');
 const {createDataDongBoProcessor}=require('../src/processors/datadongbo');
 const env={DATA_DONG_BO_URL:'https://fixture.invalid',DATA_DONG_BO_TOKEN:'fixture-token-'.repeat(4)};
 const job=()=>({data:{type:'sheet-write',key:'fixed-job-key',payload:{storageProvider:'datadongbo',entity:'VehicleTrips',sheet:'VehicleTrips',spreadsheetId:'fixture-sheet-1234567890',headers:['ID'],recordId:'trip-1',op:'append',rowValues:['trip-1']}},updateData:async()=>{}});
+test('HDoi forwards old headers unchanged and rejects malformed IDs before transport',async()=>{
+ const bodies=[],execute=createDataDongBoProcessor({env,fetch:async(url,options)=>{bodies.push(JSON.parse(options.body));return new Response(JSON.stringify({ok:true,durable:true}));}});
+ await execute(job());assert.deepEqual(bodies[0].headers,['ID']);
+ for(const patch of [{headers:['ID','ID']},{rowValues:['other']},{rowValues:['trip-1','extra']}]){
+  const invalid=job();Object.assign(invalid.data.payload,patch);await assert.rejects(()=>execute(invalid),{code:'DATA_DONG_BO_INVALID_JOB'});
+ }
+ assert.equal(bodies.length,1);
+});
 test('HDoi confirms MySQL delivery and never calls Google',async()=>{
  const calls=[],execute=createDataDongBoProcessor({env,fetch:async(url,options)=>{calls.push({url,options});return new Response(JSON.stringify({ok:true,durable:true}));}});
  const j=job(),one=await execute(j);await execute(j);assert.equal(one.target,'datadongbo');assert.equal(one.sheetsStatus,'pending');assert.equal(calls.length,2);
