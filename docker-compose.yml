@@ -23,12 +23,25 @@ x-app: &app
     SHEETS_READS_PER_MINUTE: ${SHEETS_READS_PER_MINUTE:-40}
     SHEETS_WRITES_PER_MINUTE: ${SHEETS_WRITES_PER_MINUTE:-40}
     GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON:-}
+    IMAGE_HOLD_ENABLED: ${IMAGE_HOLD_ENABLED:-false}
+    IMAGE_STORAGE_DIR: /data/images
+    IMAGE_WORKER_CONCURRENCY: ${IMAGE_WORKER_CONCURRENCY:-2}
+    IMAGE_ALERT_AFTER_MS: ${IMAGE_ALERT_AFTER_MS:-900000}
+    DRIVE_FOLDER_ID: ${DRIVE_FOLDER_ID:-}
+    DRIVE_CLIENT_ID: ${DRIVE_CLIENT_ID:-}
+    DRIVE_CLIENT_SECRET: ${DRIVE_CLIENT_SECRET:-}
+    DRIVE_REFRESH_TOKEN: ${DRIVE_REFRESH_TOKEN:-}
+    GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+    GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+    GOOGLE_OAUTH_REFRESH_TOKEN: ${GOOGLE_OAUTH_REFRESH_TOKEN:-}
     # Khống chế Garbage Collection của Node.js tránh phình RAM ảo
     NODE_OPTIONS: "--max-old-space-size=400"
   
   # Bảo vệ hai container Node.js này khỏi bị Linux OOM-killer ưu tiên hạ sát
   oom_score_adj: -300
   stop_grace_period: 60s
+  volumes:
+    - image-data:/data/images
   security_opt:
     - no-new-privileges:true
   cap_drop:
@@ -114,5 +127,7 @@ services:
         max-file: "2"
 
 volumes:
+  image-data:
+    name: ${IMAGE_VOLUME_NAME:-hdoi-image-data}
   redis-data:
     name: ${REDIS_VOLUME_NAME:-hdoi-redis-data}

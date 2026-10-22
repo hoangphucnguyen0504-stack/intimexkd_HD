@@ -1,6 +1,6 @@
 'use strict';
 // Only the configured backend is contacted. Job payloads cannot supply URLs.
-function createBackendProcessor(config, fetchImpl = fetch) {
+function createBackendProcessor(config, fetchImpl = fetch, {images} = {}) {
   if (!config.backendUrl || !config.backendToken || config.backendToken.length < 32 || config.backendToken.startsWith('REPLACE_')) throw Error('BACKEND_WORKER_CONFIG_REQUIRED');
   const url = new URL('/api/internal/queue/execute', config.backendUrl);
   if (url.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(url.hostname)) throw Error('BACKEND_HTTPS_REQUIRED');
@@ -46,6 +46,13 @@ function createBackendProcessor(config, fetchImpl = fetch) {
     if (delivery && ['NO_RECIPIENT','DISABLED'].includes(result.deliveryStatus)) {
       const next = {...job.data,effect:{status:'rejected',at:Date.now()}};
       await job.updateData(next); job.data = next;
+    }
+    const imageLinks=result._imageLinks||result.result?._imageLinks;
+    if(Array.isArray(imageLinks)&&imageLinks.length){
+      if(!images)throw Object.assign(Error('IMAGE_LINK_SERVICE_REQUIRED'),{code:'IMAGE_LINK_SERVICE_REQUIRED',retryable:true});
+      try {
+        for(const {imageId,...link} of imageLinks)await images.links(config.namespace,imageId,[link]);
+      }catch{throw Object.assign(Error('IMAGE_LINK_COMMIT_FAILED'),{code:'IMAGE_LINK_COMMIT_FAILED',retryable:true});}
     }
     return {confirmed: true, ...(result.deliveryStatus ? {deliveryStatus:result.deliveryStatus} : {})};
   };

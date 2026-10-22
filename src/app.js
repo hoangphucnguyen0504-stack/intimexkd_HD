@@ -11,6 +11,9 @@ function createApp({redis, queues, store, config}) {
   app.get('/health/live', (_req, res) => res.json({ok: true}));
   app.use(require('./middleware/auth')(config.token));
   app.use(express.json({limit: '2mb', strict: true}));
+  // Disabling new uploads must not break references accepted before rollback.
+  const images=require('./services/images').createImages({config,queues});
+  app.use('/v1/images',require('./routes/images')(images,config));
   const route = handler => (req, res, next) => Promise.resolve(handler(req, res)).catch(next);
   const coordination = require('./services/coordination').createCoordination(redis, config);
   const outbox = require('./services/sheetOutbox').createSheetOutbox({redis, store, queues});

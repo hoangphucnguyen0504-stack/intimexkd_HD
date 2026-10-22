@@ -13,6 +13,7 @@ function queues(config, connection) {
     removeOnComplete: false, removeOnFail: false, attempts: 5,
     backoff: {type: 'hdoi', delay: 1000}
   }};
-  return {sheets: new Queue('sheets', options), background: new Queue('background', options)};
+  return {sheets: new Queue('sheets', options), background: new Queue('background', options),
+    ...(config.imagesEnabled ? {images:new Queue('images',options),imageMetadata:new Queue('imageMetadata',options)} : {})};
 }
 module.exports = {connect, queues};

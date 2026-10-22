@@ -57,6 +57,19 @@ async function main() {
   const config = loadConfig(), redis = connect(config, true), queues = createQueues(config, redis);
   const store = createStore(redis, queues, config);
   await redis.ping();
+  let imageService,imageSweep,imageWorkers=[];
+  if(config.imagesEnabled){
+    await queues.images.setGlobalConcurrency(config.imageConcurrency);
+    await queues.imageMetadata.setGlobalConcurrency(2);
+    const {createImageDrive,createImageSync}=require('../services/imageDrive');
+    imageService=require('../services/images').createImages({config,queues,drive:await createImageDrive(),sync:createImageSync()});
+    imageWorkers=[new Worker('images',job=>imageService.processUpload(job.data),{connection:redis,prefix:config.prefix,concurrency:config.imageConcurrency}),
+      new Worker('imageMetadata',job=>imageService.processMetadata(job.data),{connection:redis,prefix:config.prefix,concurrency:2})];
+    for(const worker of imageWorkers)worker.on('error',()=>console.error(JSON.stringify({event:'image-worker-unavailable'})));
+    await imageService.sweep();
+    let sweeping=false;
+    imageSweep=setInterval(async()=>{if(sweeping)return;sweeping=true;try{await imageService.sweep();}catch{console.error(JSON.stringify({event:'image-sweep-unavailable'}));}finally{sweeping=false;}},15000);
+  }
   const useDataDongBo=process.env.BUSINESS_DATA_PROVIDER==='datadongbo';
   const sheetsConcurrency=sheetsWorkerConcurrency(config);
   // Google mode keeps one Sheets write at a time across every replica.
@@ -89,7 +102,7 @@ async function main() {
       return result;
     } finally {clearInterval(renew); await coordination.execute({op:'lockRelease',name,owner}).catch(()=>{});}
   };
-  const background = createBackendProcessor(config);
+  const background = createBackendProcessor(config,fetch,{images:imageService});
   const workers = Object.entries({sheets:guardedSheets, background}).map(([kind, execute]) => {
     const worker = new Worker(kind, processor({store, execute, queue: queues[kind]}), {
       connection: redis, prefix: config.prefix, concurrency: kind === 'sheets' ? sheetsConcurrency : config.concurrency,
@@ -122,7 +135,8 @@ async function main() {
   };
   const loop = dispatch();
   async function stop() {
-    if (stopped) return; stopped = true; clearInterval(heartbeat); clearInterval(linkBeat);
+    if (stopped) return; stopped = true; clearInterval(heartbeat); clearInterval(linkBeat);clearInterval(imageSweep);
+    await Promise.all(imageWorkers.map(worker=>worker.close()));
     await Promise.all(workers.map(worker => worker.close())); await loop;
     await Promise.all(Object.values(queues).map(queue => queue.close())); await redis.quit();
   }
