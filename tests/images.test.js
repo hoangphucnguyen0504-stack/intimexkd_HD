@@ -11,7 +11,7 @@ const chunk=(more={})=>({namespace:NS,imageId:ID,uploadKey:'ticket-field-slot',f
 async function setup(t,options={}) {
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'hdoi-images-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
   const config={namespace:NS,imageStorageDir:dir,imageAlertAfterMs:900000};
-  const jobs=[];const queue={getJob:async()=>null,add:async(name,data,opts)=>jobs.push({name,data,opts})};
+  const jobs=[];const queue={getJob:async()=>null,add:async(name,data,opts)=>{assert.ok(Number.isFinite(opts.delay),'queue delay must be finite');jobs.push({name,data,opts});}};
   const create=extra=>createImages({config,queues:{images:queue,imageMetadata:queue},logger:{error(){}},...options,...extra});
   return {dir,create,jobs,service:create()};
 }
@@ -35,9 +35,10 @@ test('partial restart and rejected magic bytes never acknowledges complete image
 });
 test('COMPLETED committed before cleanup, data sync failure does not upload again',async t=>{
   let uploads=0,verified=0,syncs=0;
-  const {service,create,dir}=await setup(t,{drive:{allocate:async()=>'drive-id',upload:async()=>uploads++,verify:async()=>verified++},sync:async()=>{syncs++;throw Error('offline');}});
+  const {service,create,dir,jobs}=await setup(t,{drive:{allocate:async()=>'drive-id',upload:async()=>uploads++,verify:async()=>verified++},sync:async()=>{syncs++;throw Error('offline');}});
   await service.uploadChunk(NS,ID,chunk(),0);await service.processUpload({namespace:NS,imageId:ID});
   const m=await service.get(NS,ID);assert.equal(m.state,'COMPLETED');assert.equal(m.fileId,'drive-id');
+  assert.equal(jobs.find(job=>job.name==='imageMetadata')?.opts.delay,0,'first metadata job must be enqueued immediately');
   assert.equal((await service.content(NS,ID)).image.source,'drive');
   await assert.rejects(fs.stat(path.join(dir,NS,ID,'image')),{code:'ENOENT'});
   await create().processUpload({namespace:NS,imageId:ID});await service.processMetadata({namespace:NS,imageId:ID});

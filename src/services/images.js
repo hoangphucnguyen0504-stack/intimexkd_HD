@@ -57,7 +57,8 @@ function createImages({config, queues = {}, clock = Date.now, drive, sync, logge
     const job=await queue.getJob(id);
     if(job && ['active','waiting','delayed','prioritized','waiting-children'].includes(await job.getState())) return;
     if(job) await job.remove();
-    await queue.add(kind,{namespace:m.namespace,imageId:m.imageId},{jobId:id,delay:Math.max(0,(kind==='imageMetadata'?m.syncNextAttemptAt:m.nextAttemptAt||0)-clock()),attempts:1,removeOnComplete:1000,removeOnFail:1000});
+    const nextAttemptAt=(kind==='imageMetadata'?m.syncNextAttemptAt:m.nextAttemptAt)||0;
+    await queue.add(kind,{namespace:m.namespace,imageId:m.imageId},{jobId:id,delay:Math.max(0,nextAttemptAt-clock()),attempts:1,removeOnComplete:1000,removeOnFail:1000});
   }
   async function uploadChunk(namespace,id,input,index) {
     validate(namespace,id);
