@@ -1,6 +1,6 @@
 'use strict';
 const {createHash, timingSafeEqual} = require('node:crypto');
-const TYPES = new Set(['sheet-write', 'email', 'weighing-email', 'qr-recovery', 'security-alert']);
+const TYPES = new Set(['sheet-write', 'email', 'weighing-email', 'qr-recovery', 'security-alert', 'sales-email-scan', 'sales-email-schedule']);
 function canonical(value) {
   if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
   if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + canonical(value[k])).join(',') + '}';
@@ -22,6 +22,14 @@ function validate(input, now = Date.now()) {
   }
   if (input.dependsOn != null && !/^[a-f0-9]{64}$/.test(input.dependsOn)) throw Object.assign(Error('INVALID_DEPENDENCY'), {status: 400});
   const payload = input.payload;
+  if (input.type === 'sales-email-scan' || input.type === 'sales-email-schedule') {
+    const scan = input.type === 'sales-email-scan', fields = scan ? ['userId', 'runId', 'generation'] : ['userId', 'generation', 'scheduleId'];
+    const validReference = scan ? typeof payload.runId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(payload.runId)
+      : typeof payload.scheduleId === 'string' && payload.scheduleId.length > 0 && payload.scheduleId.length <= 100;
+    if (Object.keys(payload).some(key => !fields.includes(key)) || typeof payload.userId !== 'string' || !payload.userId || payload.userId.length > 200 || !Number.isSafeInteger(payload.generation) || payload.generation < 0 || !validReference) {
+      throw Object.assign(Error('INVALID_SALES_EMAIL_JOB'), {status: 400});
+    }
+  }
   let entityKey = input.entityKey;
   if (input.type === 'sheet-write') {
     if (!['append', 'update', 'delete'].includes(payload.op) || !/^[a-zA-Z0-9_-]{10,200}$/.test(payload.spreadsheetId || '') ||
