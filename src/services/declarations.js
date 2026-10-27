@@ -48,7 +48,7 @@ elseif patch.status=='FAILED' then
 else return 'TRANSITION' end
 for k,v in pairs(patch) do r[k]=v end
 r.revision=r.revision+1;r.updatedAt=tonumber(ARGV[4])
-if patch.status=='SUCCEEDED' and redis.call('GET',KEYS[3])==r.id then redis.call('DEL',KEYS[3]) end
+if (patch.status=='SUCCEEDED' or patch.status=='FAILED') and redis.call('GET',KEYS[3])==r.id then redis.call('DEL',KEYS[3]) end
 local value=cjson.encode(r);redis.call('SET',KEYS[1],value);return value`;
 function createDeclarations({redis, config, store}) {
   const base = store.base, record = id => base + 'declaration:' + id;
