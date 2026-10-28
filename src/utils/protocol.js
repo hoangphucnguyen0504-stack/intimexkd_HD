@@ -1,6 +1,6 @@
 'use strict';
 const {createHash, timingSafeEqual} = require('node:crypto');
-const TYPES = new Set(['sheet-write', 'email', 'weighing-email', 'qr-recovery', 'security-alert', 'sales-email-scan', 'sales-email-schedule']);
+const TYPES = new Set(['sheet-write', 'email', 'weighing-email', 'qr-recovery', 'security-alert', 'business-command', 'sales-email-scan', 'sales-email-schedule']);
 function canonical(value) {
   if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
   if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + canonical(value[k])).join(',') + '}';
@@ -22,6 +22,11 @@ function validate(input, now = Date.now()) {
   }
   if (input.dependsOn != null && !/^[a-f0-9]{64}$/.test(input.dependsOn)) throw Object.assign(Error('INVALID_DEPENDENCY'), {status: 400});
   const payload = input.payload;
+  if(input.type==='business-command'&&(payload.commandVersion!==1||
+    typeof payload.command!=='string'||!/^[a-z][a-z0-9.-]{1,79}$/.test(payload.command)||
+    typeof payload.requestId!=='string'||!/^[A-Za-z0-9_:.-]{8,128}$/.test(payload.requestId)||
+    !payload.payload||typeof payload.payload!=='object'||Array.isArray(payload.payload)))
+    throw Object.assign(Error('INVALID_BUSINESS_COMMAND'),{status:400});
   if (input.type === 'sales-email-scan' || input.type === 'sales-email-schedule') {
     const scan = input.type === 'sales-email-scan', fields = scan ? ['userId', 'runId', 'generation'] : ['userId', 'generation', 'scheduleId'];
     const validReference = scan ? typeof payload.runId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(payload.runId)

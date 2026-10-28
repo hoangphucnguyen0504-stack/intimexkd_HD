@@ -49,6 +49,7 @@ function createApp({redis, queues, store, config}) {
     const durableDeclarations = await declarations.health();
     res.json({ok: true, durableDeclarations});
   }));
+  app.get('/v1/capabilities', (_req,res)=>res.json({ok:true,businessCommandVersion:1,types:[...require('./utils/protocol').TYPES]}));
   app.post('/v1/jobs', route(async (req, res) => {
     const key = config.prefix + ':api-window';
     const hits = await redis.eval("local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('PEXPIRE',KEYS[1],1000) end; return n", 1, key);
