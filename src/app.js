@@ -22,7 +22,7 @@ function createApp({redis, queues, store, config}) {
     const body = req.body;
     if (body.namespace !== config.namespace) return res.status(403).json({ok:false,code:'NAMESPACE_MISMATCH'});
     let value;
-    if (['declarationAccept','declarationGet','declarationUpdate'].includes(body.op)) value = await declarations.execute(body);
+    if (['declarationAccept','declarationGet','declarationUpdate','declarationReleaseIdentity'].includes(body.op)) value = await declarations.execute(body);
     else if (body.op === 'commit') value = await store.commit(body);
     else if (typeof body.op === 'string' && body.op.startsWith('sheet')) value = await outbox.execute(body.op, body);
     else if (body.op === 'queueDiagnostics') {

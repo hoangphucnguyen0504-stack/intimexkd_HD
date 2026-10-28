@@ -18,7 +18,21 @@ if old then
  redis.call('SET',KEYS[1],old); return cjson.encode({record=r,duplicate=true})
 end
 if redis.call('EXISTS',KEYS[4])==1 then return 'CONFLICT' end
-local identity=redis.call('GET',KEYS[2]); if identity and identity~=ARGV[4] then return 'PENDING' end
+local identity=redis.call('GET',KEYS[2])
+if identity and identity~=ARGV[4] then
+ local prev=redis.call('GET',ARGV[9]..identity)
+ if not prev then
+  redis.call('DEL',KEYS[2])
+  identity=nil
+ else
+  local ok,pr=pcall(cjson.decode,prev)
+  if not ok or not pr or pr.status=='SUCCEEDED' or pr.status=='FAILED' then
+   redis.call('DEL',KEYS[2])
+   identity=nil
+  end
+ end
+ if identity then return 'PENDING' end
+end
 if redis.call('SCARD',KEYS[3])>=5 then return 'TICKET_USED' end
 local seq=redis.call('GET',KEYS[5]); if seq and (not tonumber(seq) or tonumber(seq)<0 or tonumber(seq)>=9007199254740990 or tonumber(seq)~=math.floor(tonumber(seq))) then return 'CORRUPT' end
 seq=redis.call('INCR',KEYS[5])
@@ -85,7 +99,8 @@ function createDeclarations({redis, config, store}) {
     await requireDurability();
     const result = await redis.eval(ACCEPT, 8, record(id), base + 'declaration-identity:' + hash(identityKey), base + 'declaration-ticket:' + hash(ticketId),
       store.record(id), base + 'sequence', base + 'dispatch', base + 'history', base + 'queue-status:background:waiting',
-      job.fingerprint, identityKey, ticketId, id, JSON.stringify(row), native.fingerprint, JSON.stringify(native), String(now));
+      job.fingerprint, identityKey, ticketId, id, JSON.stringify(row), native.fingerprint, JSON.stringify(native), String(now),
+      base + 'declaration:');
     const errors = {CONFLICT: ['IDEMPOTENCY_CONFLICT', 409], PENDING: ['SUBMISSION_PENDING', 409], TICKET_USED: ['TICKET_USED', 409], CORRUPT: ['DURABLE_DECLARATION_STATE_INVALID', 503]};
     if (errors[result]) fail(...errors[result]);
     await barrier();
@@ -132,10 +147,25 @@ function createDeclarations({redis, config, store}) {
     if (errors[result]) fail(...errors[result]);
     await barrier(); return {...JSON.parse(result), durable: true};
   }
+  async function releaseIdentity(input) {
+    const identityKey = text(input.identityKey);
+    const key = base + 'declaration-identity:' + hash(identityKey);
+    const current = await redis.get(key);
+    if (!current) return { released: false, found: null };
+    const raw = await redis.get(record(current));
+    let parsed = null;
+    try { parsed = raw ? JSON.parse(raw) : null; } catch {}
+    if (input.force === true || !parsed || ['SUCCEEDED', 'FAILED'].includes(parsed.status)) {
+      await redis.del(key);
+      return { released: true, id: current, status: parsed?.status || 'MISSING' };
+    }
+    return { released: false, id: current, status: parsed.status };
+  }
   async function execute(input) {
     if (input.op === 'declarationAccept') return accept(input);
     if (input.op === 'declarationGet') return get(input);
     if (input.op === 'declarationUpdate') return update(input);
+    if (input.op === 'declarationReleaseIdentity') return releaseIdentity(input);
     fail('INVALID_DECLARATION_OPERATION', 400);
   }
   return {accept, get, update, health, execute};

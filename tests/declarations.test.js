@@ -30,6 +30,7 @@ test('accept persists complete payload and native dispatcher indexes before same
   assert.deepEqual(call.slice(7,11),['test:service:sequence','test:service:dispatch','test:service:history','test:service:queue-status:background:waiting']);
   const native=JSON.parse(call[17]);assert.equal(native.id,value.id);assert.equal(native.type,'qr-recovery');assert.deepEqual(native.payload,{key:value.id,durable:true});
   assert.deepEqual(f.calls.at(-1),['call','WAITAOF',1,0,5000]);
+  assert.equal(call[19],'test:service:declaration:');
   const raw=await f.service.get({id:value.id});assert.equal(raw.attempts,0);assert.equal(raw.revision,1);assert.deepEqual(raw.job,input().job);
 });
 test('readiness exposes only sanitized version and availability',async()=>{
@@ -61,7 +62,7 @@ test('malformed requests make no Redis writes',async()=>{
   const f=fixture();await assert.rejects(f.service.accept({...input(),job:{}}));await assert.rejects(f.service.update({id:'bad',owner:'owner',expectedRevision:1,status:'PROCESSING',attempts:1}));for(const attempts of [-1,6,NaN,1.5])await assert.rejects(f.service.update({key:'decl-one',owner:'owner',expectedRevision:1,status:'PROCESSING',attempts}));await assert.rejects(f.service.execute({op:'unexpected'}));assert.equal(f.calls.length,0);
 });
 test('Lua includes atomic ticket ceiling, immutable replay, ownership, revision and no TTL',()=>{
-  assert.match(ACCEPT,/SCARD.*>=5/);assert.match(ACCEPT,/r.fingerprint~=ARGV\[1\]/);assert.match(ACCEPT,/SET',KEYS\[1\],old/);assert.match(UPDATE,/GET',KEYS\[2\].*ARGV\[1\]/);assert.match(UPDATE,/r.revision~=tonumber/);assert.doesNotMatch(ACCEPT+UPDATE,/EXPIRE|PEXPIRE|SETEX/);assert.doesNotMatch(UPDATE,/r\.job\[/);assert.match(UPDATE,/GET',KEYS\[3\]\)==r.id/);
+  assert.match(ACCEPT,/SCARD.*>=5/);assert.match(ACCEPT,/r.fingerprint~=ARGV\[1\]/);assert.match(ACCEPT,/SET',KEYS\[1\],old/);assert.match(ACCEPT,/ARGV\[9\]\.\.identity/);assert.match(UPDATE,/GET',KEYS\[2\].*ARGV\[1\]/);assert.match(UPDATE,/r.revision~=tonumber/);assert.doesNotMatch(ACCEPT+UPDATE,/EXPIRE|PEXPIRE|SETEX/);assert.doesNotMatch(UPDATE,/r\.job\[/);assert.match(UPDATE,/GET',KEYS\[3\]\)==r.id/);
 });
 test('native exhausted or unknown delivery is visible without replacing immutable payload or successful raw state',async()=>{
   for(const state of ['failed','unknown']){const f=fixture(),ack=await f.service.accept(input());f.nativeStatus=state;const raw=await f.service.get({id:ack.id});assert.equal(raw.status,'FAILED');assert.equal(raw.manualReconciliation,true);assert.deepEqual(raw.job,input().job);const key='test:service:declaration:'+ack.id,stored=JSON.parse(f.rows.get(key));assert.equal(stored.status,'QUEUED');stored.status='SUCCEEDED';stored.result={id:'saved'};f.rows.set(key,JSON.stringify(stored));assert.equal((await f.service.get({id:ack.id})).status,'SUCCEEDED');}
@@ -110,4 +111,27 @@ test('legacy readiness remains HTTP 200 on healthy Redis when durable capability
   await layer.route.stack[0].handle({},response,error=>{throw error;});
   assert.equal(pings,1);assert.equal(response.statusCode,200);assert.deepEqual(response.body,{ok:true,durableDeclarations:{version:1,available:false}});
   await assert.rejects(f.service.accept(input()),/DURABLE_DECLARATIONS_UNAVAILABLE/);assert.equal(f.calls.some(c=>c[0]==='eval'),false);
+});
+test('declarationReleaseIdentity releases missing or terminal reservations safely',async()=>{
+  const f=fixture(), id=hash('decl-one'), identityKey='identity-release-test';
+  const redisKey='test:service:declaration-identity:'+hash(identityKey);
+  const declKey='test:service:declaration:'+id;
+  f.options.redis.del=async key=>{f.rows.delete(key);return 1;};
+  let res=await f.service.execute({op:'declarationReleaseIdentity',identityKey});
+  assert.deepEqual(res,{released:false,found:null});
+  f.rows.set(redisKey,id);
+  res=await f.service.execute({op:'declarationReleaseIdentity',identityKey});
+  assert.deepEqual(res,{released:true,id,status:'MISSING'});
+  assert.equal(f.rows.has(redisKey),false);
+  f.rows.set(redisKey,id);f.rows.set(declKey,JSON.stringify({id,status:'FAILED'}));
+  res=await f.service.execute({op:'declarationReleaseIdentity',identityKey});
+  assert.deepEqual(res,{released:true,id,status:'FAILED'});
+  assert.equal(f.rows.has(redisKey),false);
+  f.rows.set(redisKey,id);f.rows.set(declKey,JSON.stringify({id,status:'PROCESSING'}));
+  res=await f.service.execute({op:'declarationReleaseIdentity',identityKey});
+  assert.deepEqual(res,{released:false,id,status:'PROCESSING'});
+  assert.equal(f.rows.has(redisKey),true);
+  res=await f.service.execute({op:'declarationReleaseIdentity',identityKey,force:true});
+  assert.deepEqual(res,{released:true,id,status:'PROCESSING'});
+  assert.equal(f.rows.has(redisKey),false);
 });
