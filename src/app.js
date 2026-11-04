@@ -138,7 +138,16 @@ async function main() {
   await waitForRedisReady(redis);
   await redis.ping();
   const server = createApp({config, redis, queues, store}).listen(config.port, '0.0.0.0');
-  const stop = () => server.close(async () => {await Promise.all(Object.values(queues).map(q => q.close())); await redis.quit();});
+  const stop = () => server.close(async () => {
+    try {
+      await Promise.all(Object.values(queues).map(q => q.close()));
+      if (redis.status === 'ready') await redis.quit();
+    } catch {
+      console.error(JSON.stringify({event: 'queue-api-shutdown-failed'}));
+    } finally {
+      redis.disconnect();
+    }
+  });
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
 }
 if (require.main === module) {
