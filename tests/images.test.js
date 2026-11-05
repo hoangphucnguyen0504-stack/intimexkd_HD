@@ -33,6 +33,20 @@ test('partial restart and rejected magic bytes never acknowledges complete image
   await assert.rejects(service.uploadChunk(NS,other,chunk({imageId:other,chunk:Buffer.from('not image').toString('base64')}),0),{status:400});
   await assert.rejects(service.content(NS,other),{status:404});
 });
+test('archived account ownership survives restart and ambiguous ACK never rotates',async t=>{
+ let clock=1000,allocations=0,rotations=0,uploads=0;const accounts=[];
+ const drive={allocate:async()=>{allocations++;return {fileId:'account-a-file',credentialId:'account-a'};},rotate:async()=>{rotations++;},upload:async input=>{accounts.push(input.credentialId);uploads++;if(uploads===1)throw Error('ambiguous network ACK');},verify:async input=>accounts.push(input.credentialId)};
+ const {service,create}=await setup(t,{drive,clock:()=>clock});await service.uploadChunk(NS,ID,chunk(),0);await service.processUpload({namespace:NS,imageId:ID});
+ clock+=400000;await create().processUpload({namespace:NS,imageId:ID});assert.equal(allocations,1);assert.equal(rotations,0);assert.deepEqual(accounts,['account-a','account-a','account-a']);
+ const image=await create().get(NS,ID);assert.equal(image.state,'COMPLETED');assert.equal(image.credentialId,'account-a');
+});
+test('only repeated no-write user quota after durable backoff replaces preallocated ownership',async t=>{
+ let clock=1000,rotations=0,allocations=0;
+ const drive={allocate:async()=>({fileId:'file-'+(++allocations),credentialId:'account-'+rotations}),rotate:async()=>{rotations++;},upload:async()=>{throw Object.assign(Error('quota'),{noWriteQuota:true});},verify:async()=>{throw Error('must not verify');}};
+ const {service,create}=await setup(t,{drive,clock:()=>clock});await service.uploadChunk(NS,ID,chunk(),0);await service.processUpload({namespace:NS,imageId:ID});assert.equal(rotations,0);
+ clock+=400000;await create().processUpload({namespace:NS,imageId:ID});assert.equal(rotations,1);assert.equal(allocations,1);
+ clock+=400000;await create().processUpload({namespace:NS,imageId:ID});assert.equal(allocations,2);
+});
 test('COMPLETED committed before cleanup, data sync failure does not upload again',async t=>{
   let uploads=0,verified=0,syncs=0;
   const {service,create,dir,jobs}=await setup(t,{drive:{allocate:async()=>'drive-id',upload:async()=>uploads++,verify:async()=>verified++},sync:async()=>{syncs++;throw Error('offline');}});
@@ -83,7 +97,7 @@ test('Drive adapter checks metadata and media checksum with private server authe
   }})}};
   const drive=await require('../src/services/imageDrive').createImageDrive({DRIVE_CLIENT_ID:'client',DRIVE_CLIENT_SECRET:'secret',DRIVE_REFRESH_TOKEN:'refresh'},fake);
   const expected={fileId:'allocated',mime:'image/jpeg',size:bytes.length,md5:crypto.createHash('md5').update(bytes).digest('hex'),checksum:crypto.createHash('sha256').update(bytes).digest('hex')};
-  assert.equal(await drive.allocate(),'allocated');await drive.verify(expected);assert.ok(calls.some(c=>c.alt==='media'));
+  assert.deepEqual(await drive.allocate(),{fileId:'allocated',credentialId:'environment'});await drive.verify(expected);assert.ok(calls.some(c=>c.alt==='media'));
   bad=true;await assert.rejects(drive.verify(expected),{code:'IMAGE_DRIVE_CONTENT_MISMATCH'});
 });
 test('HTTP routes keep metadata envelope, bounded batch and completed source redirect',async t=>{

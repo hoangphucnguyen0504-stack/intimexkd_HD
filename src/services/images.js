@@ -22,7 +22,7 @@ function imageMime(bytes) {
 }
 function publicImage(m) {
   return {namespace:m.namespace,imageId:m.imageId,state:m.state,source:m.state==='COMPLETED'?'drive':'hdoi',
-    fileId:m.state==='COMPLETED'?m.driveFileId:undefined,mime:m.mime,size:m.size,checksum:m.checksum,
+    fileId:m.state==='COMPLETED'?m.driveFileId:undefined,credentialId:m.credentialId,mime:m.mime,size:m.size,checksum:m.checksum,
     version:m.version,verifiedAt:m.verifiedAt,received:Object.keys(m.chunks || {}).length,total:m.total,
     attempts:m.attempts || 0,nextAttemptAt:m.nextAttemptAt,lastError:m.lastError,syncState:m.syncState};
 }
@@ -109,12 +109,13 @@ function createImages({config, queues = {}, clock = Date.now, drive, sync, logge
       if(!drive)throw fault('IMAGE_DRIVE_NOT_CONFIGURED');
       let fileId=claimed.driveFileId;
       if(!fileId) {
-        fileId=await drive.allocate();
-        await locked(namespace,imageId,async(dir,m)=>{if(m.leaseOwner!==owner)throw fault('IMAGE_LEASE_LOST');m.driveFileId=fileId;await write(dir,m);});
+        const allocation=await drive.allocate();fileId=typeof allocation==='string'?allocation:allocation.fileId;
+        claimed.credentialId=typeof allocation==='string'?undefined:allocation.credentialId;
+        await locked(namespace,imageId,async(dir,m)=>{if(m.leaseOwner!==owner)throw fault('IMAGE_LEASE_LOST');m.driveFileId=fileId;m.credentialId=claimed.credentialId;await write(dir,m);});
       }
       const bytes=await fs.readFile(path.join(validate(namespace,imageId),'image'));
-      await drive.upload({fileId,bytes,mime:claimed.mime,namespace,imageId});
-      await drive.verify({fileId,mime:claimed.mime,size:claimed.size,md5:claimed.md5,checksum:claimed.checksum});
+      await drive.upload({fileId,credentialId:claimed.credentialId,bytes,mime:claimed.mime,namespace,imageId});
+      await drive.verify({fileId,credentialId:claimed.credentialId,mime:claimed.mime,size:claimed.size,md5:claimed.md5,checksum:claimed.checksum});
       if(lost)throw fault('IMAGE_LEASE_LOST');
       const completed=await locked(namespace,imageId,async(dir,m)=>{
         if(m.leaseOwner!==owner)throw fault('IMAGE_LEASE_LOST');
@@ -125,6 +126,10 @@ function createImages({config, queues = {}, clock = Date.now, drive, sync, logge
     } catch(error) {
       await locked(namespace,imageId,async(dir,m)=>{
         if(m?.leaseOwner!==owner||m.state==='COMPLETED')return;
+        // Only an explicit rejected create can relinquish the preallocated ID.
+        // Once an ACK was ambiguous, reconcile that exact ID/account forever.
+        if(error.noWriteQuota&&!m.ambiguousWrite){m.quotaFailures=(m.quotaFailures||0)+1;if(m.quotaFailures>=2&&drive.rotate){try{await drive.rotate(m.credentialId);delete m.driveFileId;delete m.credentialId;m.quotaFailures=0;delete m.rotationError;}catch{m.rotationError='DRIVE_REGISTRY_UNAVAILABLE';}}}
+        else if(!error.noWriteQuota&&m.driveFileId)m.ambiguousWrite=true;
         m.lastError=/^[A-Z][A-Z0-9_]{1,80}$/.test(error.code||'')?error.code:'IMAGE_DRIVE_FAILED';
         m.state=m.attempts>=10||clock()-m.holdAt>config.imageAlertAfterMs?'FAILED':'RETRY';
         m.nextAttemptAt=clock()+retryDelay(m.attempts,error);m.leaseUntil=0;delete m.leaseOwner;m.updatedAt=clock();await write(dir,m);
@@ -142,7 +147,7 @@ function createImages({config, queues = {}, clock = Date.now, drive, sync, logge
     const dir=validate(namespace,imageId),m=await read(dir);if(!m||m.state!=='COMPLETED'||!m.syncIntent||m.syncNextAttemptAt>clock())return;
     try {
       if(!sync)throw fault('IMAGE_METADATA_NOT_CONFIGURED');
-      await sync({namespace,imageId,version:m.version,state:m.state,fileId:m.driveFileId,mime:m.mime,size:m.size,checksum:m.checksum,verifiedAt:m.verifiedAt,updatedAt:new Date(m.updatedAt).toISOString()});
+      await sync({namespace,imageId,version:m.version,state:m.state,fileId:m.driveFileId,credentialId:m.credentialId,mime:m.mime,size:m.size,checksum:m.checksum,verifiedAt:m.verifiedAt,updatedAt:new Date(m.updatedAt).toISOString()});
       for(const link of m.links||[]) await sync.link({namespace,imageId,...link});
       await locked(namespace,imageId,async(d,current)=>{if(current.version!==m.version||current.syncRevision!==m.syncRevision)return;current.syncIntent=false;current.syncState='SYNCED';await write(d,current);});
     } catch(error) {await locked(namespace,imageId,async(d,current)=>{current.syncAttempts=(current.syncAttempts||0)+1;current.syncNextAttemptAt=clock()+retryDelay(current.syncAttempts,error);current.syncState='RETRY';await write(d,current);});}

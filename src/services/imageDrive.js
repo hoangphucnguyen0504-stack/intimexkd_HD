@@ -1,30 +1,38 @@
 'use strict';
 const {Readable}=require('node:stream');
 const crypto=require('node:crypto');
-async function createImageDrive(env=process.env,googleapis=require('googleapis')) {
+async function createImageDrive(env=process.env,googleapis=require('googleapis'),credentials=require('./driveCredentials').createCredentialStore({env}),sleep=ms=>new Promise(r=>setTimeout(r,ms))) {
   const {google}=googleapis;
+  const clients=new Map();
+  function client(c){if(clients.has(c.id))return clients.get(c.id);
   let auth;
-  const clientId=env.DRIVE_CLIENT_ID||env.GOOGLE_OAUTH_CLIENT_ID,clientSecret=env.DRIVE_CLIENT_SECRET||env.GOOGLE_OAUTH_CLIENT_SECRET,refreshToken=env.DRIVE_REFRESH_TOKEN||env.GOOGLE_OAUTH_REFRESH_TOKEN;
+  const {clientId,clientSecret,refreshToken}=c;
   if(clientId&&clientSecret&&refreshToken){
     auth=new google.auth.OAuth2(clientId,clientSecret);
     auth.setCredentials({refresh_token:refreshToken});
   } else auth=new google.auth.GoogleAuth({...(env.GOOGLE_SERVICE_ACCOUNT_JSON?{credentials:JSON.parse(env.GOOGLE_SERVICE_ACCOUNT_JSON)}:{keyFile:env.GOOGLE_APPLICATION_CREDENTIALS}),scopes:['https://www.googleapis.com/auth/drive']});
   const drive=google.drive({version:'v3',auth});
+  clients.set(c.id,drive);return drive;}
   const options=()=>({timeout:60000,retry:false,retryConfig:{retry:0}});
-  const info=async id=>(await drive.files.get({fileId:id,fields:'id,size,mimeType,md5Checksum,trashed',supportsAllDrives:true},options())).data;
+  const info=async (drive,id)=>(await drive.files.get({fileId:id,fields:'id,size,mimeType,md5Checksum,trashed',supportsAllDrives:true},options())).data;
+  async function initial(){if(!env.DRIVE_CREDENTIAL_ENCRYPTION_KEY){if(env.DATA_DONG_BO_URL)throw Error('DRIVE_CREDENTIAL_ENCRYPTION_REQUIRED');return {id:'environment',clientId:env.DRIVE_CLIENT_ID||env.GOOGLE_OAUTH_CLIENT_ID,clientSecret:env.DRIVE_CLIENT_SECRET||env.GOOGLE_OAUTH_CLIENT_SECRET,refreshToken:env.DRIVE_REFRESH_TOKEN||env.GOOGLE_OAUTH_REFRESH_TOKEN,folderId:env.DRIVE_FOLDER_ID};}return credentials.acquire({consumer:'hdoi'});}
+  const owned=id=>id&&id!=='environment'?credentials.get('hdoi',id):env.DRIVE_CREDENTIAL_ENCRYPTION_KEY?credentials.get('hdoi','environment'):initial();
   return {
-    async allocate(){return (await drive.files.generateIds({count:1,space:'drive'},options())).data.ids[0];},
-    async upload({fileId,bytes,mime,namespace,imageId}) {
+    async allocate(){let c=await initial();for(let attempt=0;;attempt++){try{return {fileId:(await client(c).files.generateIds({count:1,space:'drive'},options())).data.ids[0],credentialId:c.id};}catch(e){if(!credentials.userQuota(e)||!env.DATA_DONG_BO_URL||attempt>=2)throw e;await sleep(1000*2**attempt);if(attempt===1)c=await credentials.acquire({consumer:'hdoi',currentId:c.id,reason:'userRateLimitExceeded'});}}},
+    rotate:env.DATA_DONG_BO_URL&&env.DATA_DONG_BO_TOKEN?credentialId=>credentials.acquire({consumer:'hdoi',currentId:credentialId,reason:'userRateLimitExceeded'}):undefined,
+    userQuota:credentials.userQuota,
+    async upload({fileId,credentialId,bytes,mime,namespace,imageId}) {
+      const c=await owned(credentialId),drive=client(c);
       let existing;
-      try {existing=await info(fileId);}catch(e){if(Number(e.response?.status||e.code)!==404)throw e;}
+      try {existing=await info(drive,fileId);}catch(e){if(Number(e.response?.status||e.code)!==404)throw e;}
       if(existing)return; // Retry after ambiguous success verifies the exact preallocated ID below.
-      if(!env.DRIVE_FOLDER_ID)throw Object.assign(Error('IMAGE_DRIVE_FOLDER_REQUIRED'),{code:'IMAGE_DRIVE_FOLDER_REQUIRED'});
+      if(!c.folderId)throw Object.assign(Error('IMAGE_DRIVE_FOLDER_REQUIRED'),{code:'IMAGE_DRIVE_FOLDER_REQUIRED'});
       try {
-        await drive.files.create({requestBody:{id:fileId,name:namespace+'-'+imageId,parents:[env.DRIVE_FOLDER_ID]},media:{mimeType:mime,body:Readable.from(bytes)},supportsAllDrives:true,fields:'id'},options());
-      }catch(e){if(Number(e.response?.status||e.code)!==409)throw e;}
+        await drive.files.create({requestBody:{id:fileId,name:namespace+'-'+imageId,parents:[c.folderId]},media:{mimeType:mime,body:Readable.from(bytes)},supportsAllDrives:true,fields:'id'},options());
+      }catch(e){if(credentials.userQuota(e))e.noWriteQuota=true;if(Number(e.response?.status||e.code)!==409)throw e;}
     },
-    async verify({fileId,mime,size,md5,checksum}) {
-      const m=await info(fileId);
+    async verify({fileId,credentialId,mime,size,md5,checksum}) {
+      const drive=client(await owned(credentialId));const m=await info(drive,fileId);
       if(m.id!==fileId||m.trashed||Number(m.size)!==size||m.mimeType!==mime||m.md5Checksum!==md5)throw Object.assign(Error('IMAGE_DRIVE_METADATA_MISMATCH'),{code:'IMAGE_DRIVE_METADATA_MISMATCH'});
       const result=await drive.files.get({fileId,alt:'media',supportsAllDrives:true},{...options(),responseType:'stream'});
       const digest=crypto.createHash('sha256');let received=0;

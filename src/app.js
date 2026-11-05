@@ -15,6 +15,18 @@ function createApp({redis, queues, store, config}) {
   const images=require('./services/images').createImages({config,queues});
   app.use('/v1/images',require('./routes/images')(images,config));
   const route = handler => (req, res, next) => Promise.resolve(handler(req, res)).catch(next);
+  app.use('/v1/drive-credentials', (req,res,next)=>req.headers.origin||req.headers['sec-fetch-site']?res.status(403).json({ok:false,code:'SERVER_ACCESS_REQUIRED'}):next());
+  const driveCredentials=require('./services/driveCredentials').createCredentialStore();
+  const consumer=req=>{if(!['chamcong','hdoi'].includes(req.params.consumer))throw Object.assign(Error('DRIVE_CONSUMER_INVALID'),{status:400});return req.params.consumer;};
+  app.get('/v1/drive-credentials/:consumer/current',route(async(req,res)=>res.set('Cache-Control','no-store').json({ok:true,credential:await driveCredentials.get(consumer(req),'current')})));
+  app.post('/v1/drive-credentials/:consumer/acquire',route(async(req,res)=>{
+    const fallbackCredential=req.body.fallbackCredential;
+    if(fallbackCredential&&(!['clientId','clientSecret','refreshToken','folderId'].every(k=>typeof fallbackCredential[k]==='string'&&fallbackCredential[k])||fallbackCredential.id!=='environment'))throw Object.assign(Error('DRIVE_FALLBACK_INVALID'),{status:400});
+    res.set('Cache-Control','no-store').json({ok:true,credential:await driveCredentials.acquire({consumer:consumer(req),currentId:req.body.currentId,reason:req.body.reason,fallbackCredential})});
+  }));
+  app.get('/v1/drive-credentials/:consumer/archive/:id',route(async(req,res)=>res.set('Cache-Control','no-store').json({ok:true,credential:await driveCredentials.get(consumer(req),req.params.id)})));
+  app.post('/v1/drive-credentials/:consumer/owners',route(async(req,res)=>res.json({ok:true,credentialId:await driveCredentials.owner(consumer(req),req.body.fileId,req.body.credentialId)})));
+  app.get('/v1/drive-credentials/:consumer/owners/:fileId',route(async(req,res)=>res.json({ok:true,credentialId:await driveCredentials.owner(consumer(req),req.params.fileId)})));
   const coordination = require('./services/coordination').createCoordination(redis, config);
   const outbox = require('./services/sheetOutbox').createSheetOutbox({redis, store, queues});
   const declarations = require('./services/declarations').createDeclarations({redis, config, store});
