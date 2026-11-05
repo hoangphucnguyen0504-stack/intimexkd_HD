@@ -1,6 +1,21 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');
 const {createCredentialStore,userQuota}=require('../src/services/driveCredentials');
+test('token-only rotation inherits consumer configuration and persists across restart',async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'token-only-'));
+ const env={DRIVE_CREDENTIAL_ENCRYPTION_KEY:'a'.repeat(64),DATA_DONG_BO_URL:'https://broker.invalid',DATA_DONG_BO_TOKEN:'test-token'};
+ const fallbackCredential={id:'environment',label:'Existing',clientId:'client',clientSecret:'secret',refreshToken:'old-token',folderId:'folder'};
+ let calls=0;
+ const fetchImpl=async()=>{calls++;return {ok:true,json:async()=>({ok:true,credential:{id:'new-token',label:'Token 1',refreshToken:'new-refresh',revision:1},version:1,issuedAt:'2026-01-01T00:00:00Z'})};};
+ const make=()=>createCredentialStore({root,env,fetchImpl});
+ try{
+  await make().acquire({consumer:'chamcong',fallbackCredential});
+  const next=await make().acquire({consumer:'chamcong',currentId:'environment',reason:'userRateLimitExceeded'});
+  assert.equal(next.clientId,'client');assert.equal(next.clientSecret,'secret');assert.equal(next.folderId,'folder');assert.equal(next.refreshToken,'new-refresh');
+  assert.equal((await make().acquire({consumer:'chamcong'})).id,'new-token');assert.equal(calls,1);
+  assert.equal((await make().get('chamcong','environment')).refreshToken,'old-token');
+ }finally{await fs.rm(root,{recursive:true,force:true});}
+});
 test('encrypted durable acquisition single flight, restart, stale rotation and archived ownership',async()=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'drive-credentials-'));let calls=0;
  const env={DRIVE_CREDENTIAL_ENCRYPTION_KEY:'a'.repeat(64),DATA_DONG_BO_URL:'https://broker.invalid',DATA_DONG_BO_TOKEN:'test-token'};

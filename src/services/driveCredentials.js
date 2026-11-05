@@ -27,6 +27,11 @@ function createCredentialStore({env=process.env,root=env.DRIVE_CREDENTIAL_STORAG
   let url;try{url=new URL(env.DATA_DONG_BO_URL);if(url.username||url.password||url.search||url.hash||(url.protocol!=='https:'&&!(url.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(url.hostname))))throw Error();}catch{throw fault('DRIVE_REGISTRY_URL_INVALID');}
   let response;try{response=await fetchImpl(url.href.replace(/\/$/,'')+'/v1/drive-credentials/acquire',{method:'POST',redirect:'error',headers:{'Content-Type':'application/json',Authorization:'Bearer '+env.DATA_DONG_BO_TOKEN},body:JSON.stringify(state.pending),signal:AbortSignal.timeout(20000)});}catch{throw fault('DRIVE_REGISTRY_UNAVAILABLE');}
   if(!response.ok)throw fault('DRIVE_REGISTRY_UNAVAILABLE');let body;try{const limit=32768;let size=0;const chunks=[];if(Number(response.headers?.get?.('content-length'))>limit)throw Error();if(response.body){for await(const chunk of response.body){size+=chunk.length;if(size>limit){await response.body.cancel?.().catch(()=>{});throw Error();}chunks.push(Buffer.from(chunk));}body=JSON.parse(Buffer.concat(chunks).toString('utf8'));}else{body=await response.json();if(Buffer.byteLength(JSON.stringify(body))>limit)throw Error();}}catch{throw fault('DRIVE_REGISTRY_RESPONSE_INVALID');}const c=body.credential;
+  if(c&&c.clientId==null&&c.clientSecret==null&&c.folderId==null){
+   const base=own(state.credentials,'environment')||initial;
+   if(!['clientId','clientSecret','folderId'].every(k=>typeof base[k]==='string'&&base[k]))throw fault('DRIVE_SHARED_CONFIG_REQUIRED');
+   Object.assign(c,{clientId:base.clientId,clientSecret:base.clientSecret,folderId:base.folderId});
+  }
   if(body.ok!==true||!c||!validId(c.id)||!['id','label','clientId','clientSecret','refreshToken','folderId'].every(k=>typeof c[k]==='string'&&c[k]&&c[k].length<=8192)||!Number.isSafeInteger(c.revision)||c.revision<0||!Number.isFinite(Date.parse(body.issuedAt)))throw fault('DRIVE_REGISTRY_RESPONSE_INVALID');
   const saved={id:c.id,label:c.label,clientId:c.clientId,clientSecret:c.clientSecret,refreshToken:c.refreshToken,folderId:c.folderId,revision:c.revision,version:body.version,issuedAt:body.issuedAt};
   const old=own(state.credentials,c.id);if(old&&['clientId','clientSecret','refreshToken','folderId'].some(k=>old[k]!==saved[k]))throw fault('DRIVE_CREDENTIAL_IDENTITY_CHANGED');
