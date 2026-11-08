@@ -12,7 +12,7 @@ function processor({store, execute, queue}) {
     const status = (state,error='')=>store.status(job.data,state,error,{token,queueName:job.queueName});
     if (!await store.ready(job.data)) {
       await status('delayed', 'WAITING_FOR_PREDECESSOR');
-      await job.moveToDelayed(Date.now() + 5000, token);
+      await job.moveToDelayed(Date.now() + 400, token);
       throw new DelayedError();
     }
     await status('active');
