@@ -19,9 +19,10 @@ function createCredentialStore({env=process.env,root=env.DRIVE_CREDENTIAL_STORAG
   if(!['initial','userRateLimitExceeded','invalid_grant'].includes(reason))throw fault('DRIVE_CREDENTIAL_REASON_INVALID');
   if(currentId!==undefined&&!validId(currentId))throw fault('DRIVE_CREDENTIAL_ID_INVALID');
   if(fallbackCredential&&(fallbackCredential.id!=='environment'||!['clientId','clientSecret','refreshToken','folderId'].every(k=>typeof fallbackCredential[k]==='string'&&fallbackCredential[k].length>0)))throw fault('DRIVE_FALLBACK_INVALID');
-  if(state.activeId&&(reason==='initial'||currentId!==state.activeId)){if(!validId(state.activeId)||!own(state.credentials,state.activeId))throw fault('DRIVE_CREDENTIAL_ID_INVALID');return own(state.credentials,state.activeId);}
+  const registryManaged=consumer==='hdoi'&&!!env.DATA_DONG_BO_URL&&!!env.DATA_DONG_BO_TOKEN;
+  if(state.activeId&&!(registryManaged&&state.activeId==='environment')&&(reason==='initial'||currentId!==state.activeId)){if(!validId(state.activeId)||!own(state.credentials,state.activeId))throw fault('DRIVE_CREDENTIAL_ID_INVALID');return own(state.credentials,state.activeId);}
   const initial=fallbackCredential||(consumer==='hdoi'?fallback():{});
-  if(!state.activeId&&initial.clientId&&initial.clientSecret&&initial.refreshToken&&initial.folderId){state.credentials[initial.id]=initial;state.activeId=initial.id;await write(consumer,state);if(reason==='initial')return initial;}
+  if(!state.activeId&&initial.clientId&&initial.clientSecret&&initial.refreshToken&&initial.folderId){state.credentials[initial.id]=initial;state.activeId=initial.id;await write(consumer,state);if(reason==='initial'&&!registryManaged)return initial;}
   if(!env.DATA_DONG_BO_URL||!env.DATA_DONG_BO_TOKEN)throw fault('DRIVE_REGISTRY_NOT_CONFIGURED');
   if(!state.pending){state.pending={consumer,currentId:state.activeId||currentId,reason,requestId:crypto.randomUUID()};await write(consumer,state);}
   let url;try{url=new URL(env.DATA_DONG_BO_URL);if(url.username||url.password||url.search||url.hash||(url.protocol!=='https:'&&!(url.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(url.hostname))))throw Error();}catch{throw fault('DRIVE_REGISTRY_URL_INVALID');}
