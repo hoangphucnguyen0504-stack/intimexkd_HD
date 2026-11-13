@@ -1,6 +1,7 @@
 'use strict';
 const {Readable}=require('node:stream');
 const crypto=require('node:crypto');
+const {driveFailure}=require('./driveFailure');
 async function createImageDrive(env=process.env,googleapis=require('googleapis'),credentials=require('./driveCredentials').createCredentialStore({env}),sleep=ms=>new Promise(r=>setTimeout(r,ms))) {
   const {google}=googleapis;
   const clients=new Map();
@@ -18,18 +19,18 @@ async function createImageDrive(env=process.env,googleapis=require('googleapis')
   async function initial(){if(!env.DRIVE_CREDENTIAL_ENCRYPTION_KEY){if(env.DATA_DONG_BO_URL)throw Error('DRIVE_CREDENTIAL_ENCRYPTION_REQUIRED');return {id:'environment',clientId:env.DRIVE_CLIENT_ID||env.GOOGLE_OAUTH_CLIENT_ID,clientSecret:env.DRIVE_CLIENT_SECRET||env.GOOGLE_OAUTH_CLIENT_SECRET,refreshToken:env.DRIVE_REFRESH_TOKEN||env.GOOGLE_OAUTH_REFRESH_TOKEN,folderId:env.DRIVE_FOLDER_ID};}return credentials.acquire({consumer:'hdoi'});}
   const owned=id=>id&&id!=='environment'?credentials.get('hdoi',id):env.DRIVE_CREDENTIAL_ENCRYPTION_KEY?credentials.get('hdoi','environment'):initial();
   return {
-    async allocate(){let c=await initial();for(let attempt=0;;attempt++){try{return {fileId:(await client(c).files.generateIds({count:1,space:'drive'},options())).data.ids[0],credentialId:c.id};}catch(e){const invalidGrant=e.response?.data?.error==='invalid_grant';if((!invalidGrant&&!credentials.userQuota(e))||!env.DATA_DONG_BO_URL||attempt>=2)throw e;if(invalidGrant){c=await credentials.acquire({consumer:'hdoi',currentId:c.id,reason:'invalid_grant'});continue;}await sleep(1000*2**attempt);if(attempt===1)c=await credentials.acquire({consumer:'hdoi',currentId:c.id,reason:'userRateLimitExceeded'});}}},
-    rotate:env.DATA_DONG_BO_URL&&env.DATA_DONG_BO_TOKEN?credentialId=>credentials.acquire({consumer:'hdoi',currentId:credentialId,reason:'userRateLimitExceeded'}):undefined,
+    async allocate(){let c=await initial();for(let attempt=0;;attempt++){try{return {fileId:(await client(c).files.generateIds({count:1,space:'drive'},options())).data.ids[0],credentialId:c.id};}catch(e){const reason=driveFailure(e);if(!reason||!env.DATA_DONG_BO_URL||attempt>=2)throw e;if(reason!=='userRateLimitExceeded'){c=await credentials.acquire({consumer:'hdoi',currentId:c.id,reason});continue;}await sleep(1000*2**attempt);if(attempt===1)c=await credentials.acquire({consumer:'hdoi',currentId:c.id,reason:'userRateLimitExceeded'});}}},
+    rotate:env.DATA_DONG_BO_URL&&env.DATA_DONG_BO_TOKEN?(credentialId,reason='userRateLimitExceeded')=>credentials.acquire({consumer:'hdoi',currentId:credentialId,reason}):undefined,
     userQuota:credentials.userQuota,
     async upload({fileId,credentialId,bytes,mime,namespace,imageId}) {
       const c=await owned(credentialId),drive=client(c);
       let existing;
-      try {existing=await info(drive,fileId);}catch(e){if(Number(e.response?.status||e.code)!==404)throw e;}
+      try {existing=await info(drive,fileId);}catch(e){if(Number(e.response?.status||e.code)!==404){const reason=driveFailure(e);if(reason)e.noWriteReason=reason;throw e;}}
       if(existing)return; // Retry after ambiguous success verifies the exact preallocated ID below.
-      if(!c.folderId)throw Object.assign(Error('IMAGE_DRIVE_FOLDER_REQUIRED'),{code:'IMAGE_DRIVE_FOLDER_REQUIRED'});
+      if(!c.folderId)throw Object.assign(Error('IMAGE_DRIVE_FOLDER_REQUIRED'),{code:'IMAGE_DRIVE_FOLDER_REQUIRED',noWriteReason:'permissionDenied'});
       try {
         await drive.files.create({requestBody:{id:fileId,name:namespace+'-'+imageId,parents:[c.folderId]},media:{mimeType:mime,body:Readable.from(bytes)},supportsAllDrives:true,fields:'id'},options());
-      }catch(e){if(credentials.userQuota(e))e.noWriteQuota=true;if(Number(e.response?.status||e.code)!==409)throw e;}
+      }catch(e){const reason=driveFailure(e)||(Number(e.response?.status||e.code)===404?'permissionDenied':null);if(reason){e.noWriteReason=reason;if(reason==='userRateLimitExceeded')e.noWriteQuota=true;}if(Number(e.response?.status||e.code)!==409)throw e;}
     },
     async verify({fileId,credentialId,mime,size,md5,checksum}) {
       const drive=client(await owned(credentialId));const m=await info(drive,fileId);

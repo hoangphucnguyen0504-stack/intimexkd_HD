@@ -100,6 +100,7 @@ function createImages({config, queues = {}, clock = Date.now, drive, sync, logge
     const owner=crypto.randomUUID();
     const claimed=await locked(namespace,imageId,async(dir,m)=>{
       if(!m||m.state==='RECEIVING'||m.state==='COMPLETED'||m.state==='FAILED'||m.nextAttemptAt>clock()||m.leaseUntil>clock())return null;
+      if(m.driveFileId&&m.writeStarted===undefined)m.writeStarted=true; // Legacy journals cannot prove an earlier create never started.
       m.state='UPLOADING';m.leaseOwner=owner;m.leaseUntil=clock()+180000;m.attempts++;m.updatedAt=clock();await write(dir,m);return m;
     });
     if(!claimed)return;
@@ -111,9 +112,10 @@ function createImages({config, queues = {}, clock = Date.now, drive, sync, logge
       if(!fileId) {
         const allocation=await drive.allocate();fileId=typeof allocation==='string'?allocation:allocation.fileId;
         claimed.credentialId=typeof allocation==='string'?undefined:allocation.credentialId;
-        await locked(namespace,imageId,async(dir,m)=>{if(m.leaseOwner!==owner)throw fault('IMAGE_LEASE_LOST');m.driveFileId=fileId;m.credentialId=claimed.credentialId;await write(dir,m);});
+        await locked(namespace,imageId,async(dir,m)=>{if(m.leaseOwner!==owner)throw fault('IMAGE_LEASE_LOST');m.driveFileId=fileId;m.credentialId=claimed.credentialId;m.writeStarted=false;claimed.writeStarted=false;await write(dir,m);});
       }
       const bytes=await fs.readFile(path.join(validate(namespace,imageId),'image'));
+      await locked(namespace,imageId,async(dir,m)=>{if(m.leaseOwner!==owner)throw fault('IMAGE_LEASE_LOST');m.writeStarted=true;await write(dir,m);});
       await drive.upload({fileId,credentialId:claimed.credentialId,bytes,mime:claimed.mime,namespace,imageId});
       await drive.verify({fileId,credentialId:claimed.credentialId,mime:claimed.mime,size:claimed.size,md5:claimed.md5,checksum:claimed.checksum});
       if(lost)throw fault('IMAGE_LEASE_LOST');
@@ -128,8 +130,9 @@ function createImages({config, queues = {}, clock = Date.now, drive, sync, logge
         if(m?.leaseOwner!==owner||m.state==='COMPLETED')return;
         // Only an explicit rejected create can relinquish the preallocated ID.
         // Once an ACK was ambiguous, reconcile that exact ID/account forever.
-        if(error.noWriteQuota&&!m.ambiguousWrite){m.quotaFailures=(m.quotaFailures||0)+1;if(m.quotaFailures>=2&&drive.rotate){try{await drive.rotate(m.credentialId);delete m.driveFileId;delete m.credentialId;m.quotaFailures=0;delete m.rotationError;}catch{m.rotationError='DRIVE_REGISTRY_UNAVAILABLE';}}}
-        else if(!error.noWriteQuota&&m.driveFileId)m.ambiguousWrite=true;
+        const reason=error.noWriteReason||(error.noWriteQuota?'userRateLimitExceeded':null);
+        if(reason&&!m.ambiguousWrite&&!claimed.writeStarted){m.writeStarted=false;m.quotaFailures=(m.quotaFailures||0)+1;if((reason!=='userRateLimitExceeded'||m.quotaFailures>=2)&&drive.rotate){try{await drive.rotate(m.credentialId,reason);delete m.driveFileId;delete m.credentialId;m.quotaFailures=0;delete m.rotationError;}catch(e){m.rotationError=e.code==='DRIVE_CREDENTIALS_EXHAUSTED'?e.code:'DRIVE_REGISTRY_UNAVAILABLE';}}}
+        else if(m.driveFileId)m.ambiguousWrite=true;
         m.lastError=/^[A-Z][A-Z0-9_]{1,80}$/.test(error.code||'')?error.code:'IMAGE_DRIVE_FAILED';
         m.state=m.attempts>=10||clock()-m.holdAt>config.imageAlertAfterMs?'FAILED':'RETRY';
         m.nextAttemptAt=clock()+retryDelay(m.attempts,error);m.leaseUntil=0;delete m.leaseOwner;m.updatedAt=clock();await write(dir,m);
